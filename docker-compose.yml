@@ -1,0 +1,38 @@
+services:
+  terraria:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: terraria
+    restart: unless-stopped
+
+    ports:
+      - "7777:7777/tcp"
+      - "7777:7777/udp"
+
+    volumes:
+      - ./config:/configs
+      - ./worlds:/worlds
+      - ./control:/control
+      - ./start.sh:/start.sh:ro
+
+    entrypoint:
+      - /start.sh
+
+    stdin_open: true
+    tty: true
+
+  terraria-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: terraria-api
+    restart: unless-stopped
+
+    ports:
+      - "8080:8080"
+
+    volumes:
+      - ./control:/opt/terraria/control
+      - ./config:/opt/terraria/config
+      - ./worlds:/opt/terraria/worlds

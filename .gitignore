@@ -1,0 +1,32 @@
+# Terraria world data
+worlds/
+
+# Backups
+backup/
+
+# Runtime files
+control/
+
+# Runtime/application data
+data/
+
+# Server secrets / local configuration
+config/serverconfig.txt
+
+# Local backup files
+docker-compose.yml.bak
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Environment / secrets
+.env
+.env.*
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
