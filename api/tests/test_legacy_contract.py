@@ -111,9 +111,12 @@ def test_max_players_range_still_validated(client) -> None:
 
 def test_meta_handshake(client) -> None:
     body = client.get("/api/meta").json()
-    assert body["api_version"] == "1.1.0"
+    assert body["api_version"] == "1.2.0"
     assert body["min_client_version"] == "1.0.0"
     assert body["server_version"] == "1.4.5.8"
     assert "world.switch" in body["capabilities"]
-    assert body["deprecations"] == []
+    # 旧接口现在都会被标记弃用，并给出替代品
+    deprecated = {item["path"]: item["replacement"] for item in body["deprecations"]}
+    assert deprecated.get("/api/server/status") == "/api/v1/server"
+    assert deprecated.get("/api/world/switch") == "/api/v1/worlds/{file}/activate"
     assert body["links"]["openapi"] == "/openapi.json"

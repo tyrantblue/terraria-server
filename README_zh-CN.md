@@ -472,30 +472,30 @@ curl https://terraria-api.tyrantblue.xyz/api/health
 }
 ```
 
-### 接口契约与版本
+### 接口版本
 
-后端采用「契约先行」的流程，让前端始终知道接口变成了什么样：
+`/api/v1` 是当前的接口面（资源导向；长耗时操作返回 `202 + operation_id`；控制台按行
+分类；配置可持久化）。旧的 `/api/*` 仍然可用，并会带 `Deprecation`/`Sunset` 响应头。
 
-| 产物 | 作用 |
+| 文档 | 内容 |
 | --- | --- |
-| `api/openapi.json` | 机器可读的契约快照，提交进仓库并由 CI 校验；前端据此用 `openapi-typescript` 生成 TS 类型 |
-| `docs/api/CHANGELOG.md` | 人读的变更说明，带迁移示例与 Sunset 日期 |
-| `GET /api/meta` | 运行时握手：`api_version`、`min_client_version`、`server_version`、`capabilities`、`deprecations`。面板启动时调用一次，版本不匹配就提示用户刷新面板 |
-| `/docs`、`/openapi.json` | FastAPI 自带的交互式文档与实时 schema |
+| `docs/api/v1.md` | **给前端的 `/api/v1` 参考**（端点、请求响应、迁移对照表） |
+| `docs/api/CHANGELOG.md` | 每次契约变更，带迁移示例与 Sunset 日期 |
+| `docs/roadmap.md` | 后续功能规划与已知缺口 |
 
-变更原则：**先加不删** —— 旧路由继续可用，新增路由并存；被弃用的路由返回
-`Deprecation`/`Sunset` 响应头；删除只在大版本做。更新快照：
+变更原则：**先加不删** —— 旧路由继续可用，新路由并存；删除只在大版本做，
+且要先看 `GET /api/meta/usage` 确认旧路由已经没人调用。更新快照与跑测试：
 
 ```bash
 cd api
 uv run python scripts/export_openapi.py          # 更新 api/openapi.json
 uv run python scripts/export_openapi.py --check  # CI 用：快照过期就失败
+uv run pytest -q                                 # 测试（假 FIFO/假日志，不需真服务端）
 ```
 
 重构方案与设计说明见 `docs/api-refactor-plan.md`。
 
 ---
-
 # 15. 主要 API
 
 ## 系统

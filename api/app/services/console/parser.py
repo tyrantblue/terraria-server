@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 
 RE_VERSION = re.compile(r"Terraria Server v(.+)")
 RE_PORT = re.compile(r"Port:\s*(\d+)")
@@ -78,3 +79,90 @@ def parse_players(text: str) -> list[str]:
         if match:
             players.append(match.group(1).strip())
     return players
+
+
+# ---------------------------------------------------------------- 玩家条目
+RE_PLAYER_ENTRY = re.compile(
+    r"^(?P<name>.+?) \((?P<ip>[^()\s]+):(?P<port>\d+)\)\s*$"
+)
+
+
+@dataclass(frozen=True)
+class PlayerEntry:
+    """playing 里的一个玩家条目：`名字 (ip:port)`。"""
+
+    name: str
+    ip: str
+    port: int
+
+
+def parse_player_entries(text: str) -> list[PlayerEntry]:
+    """比 parse_players 多解析出 IP 与端口（v1 的 /players 需要）。"""
+    entries: list[PlayerEntry] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        match = RE_PLAYER_ENTRY.match(line)
+        if match:
+            entries.append(
+                PlayerEntry(
+                    name=match.group("name").strip(),
+                    ip=match.group("ip"),
+                    port=int(match.group("port")),
+                )
+            )
+    return entries
+
+
+# ---------------------------------------------------------------- 日志分类
+_CHAT = re.compile(r"^<?[^<>]+> ")
+_SAVE_PREFIXES = ("Saving world data", "Validating world save", "Backing up world file")
+_STARTUP_PREFIXES = (
+    "Resetting game objects",
+    "Loading world data",
+    "Settling liquids",
+    "Terraria Server v",
+    "Listening on port",
+    "Server started",
+)
+
+
+def classify_line(text: str) -> str:
+    """把一行控制台日志归类，供 v1 的结构化控制台接口使用。
+
+    面板不必再自己写正则去猜「这行是什么」。
+    """
+    stripped = text.strip()
+    if not stripped:
+        return "blank"
+    if stripped in (":", ": "):
+        return "prompt"
+
+    # 日志里经常出现 ": 内容" 这种提示符与内容粘连的形态
+    body = stripped[1:].strip() if stripped.startswith(":") else stripped
+
+    if "has joined." in body:
+        return "player_join"
+    if "has left." in body:
+        return "player_leave"
+    if "is connecting..." in body:
+        return "connect"
+    if "lost connection..." in body:
+        return "disconnect"
+    if "was booted:" in body:
+        return "boot"
+    if body.startswith(_SAVE_PREFIXES):
+        return "world_save"
+    if body.startswith(_STARTUP_PREFIXES):
+        return "startup"
+    if (
+        "Unhandled Exception" in body
+        or "FATAL UNHANDLED" in body
+        or "Invariant Failed" in body
+        or "Error Logging Enabled" in body
+    ):
+        return "error"
+    if _CHAT.match(body):
+        return "chat"
+    return "output"

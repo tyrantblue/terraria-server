@@ -12,7 +12,10 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.deps import RuntimeDep
+from app.core.deprecations import all_deprecations
+from app.core.telemetry import telemetry
 from app.schemas.common import HealthResponse, MetaLinks, MetaResponse
+from app.schemas.v1 import UsageResponse
 
 CHANGELOG_URL = (
     "https://github.com/tyrantblue/terraria-server/blob/main/docs/api/CHANGELOG.md"
@@ -30,6 +33,18 @@ CAPABILITIES = [
 ]
 
 router = APIRouter(tags=["system"])
+
+
+@router.get("/api/meta/usage", response_model=UsageResponse)
+def meta_usage() -> dict[str, object]:
+    """被弃用接口的调用量：用数据判断「前端已经迁完」再删旧路由。"""
+    return {
+        "note": (
+            "计数在 API 进程内存里，重启即清零；client_versions 来自请求头 "
+            "X-Client-Version（面板应带上自己的构建版本）"
+        ),
+        "usage": telemetry.snapshot(),
+    }
 
 
 @router.get("/api/health", response_model=HealthResponse)
@@ -50,7 +65,7 @@ def meta(rt: RuntimeDep) -> dict[str, object]:
         "min_client_version": rt.settings.min_client_version,
         "server_version": server_version,
         "capabilities": CAPABILITIES,
-        "deprecations": [],
+        "deprecations": all_deprecations(),
         "links": MetaLinks(
             openapi="/openapi.json",
             docs="/docs",

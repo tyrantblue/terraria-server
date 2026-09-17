@@ -55,10 +55,13 @@ def fake_terraria(tmp_path: Path) -> FakeTerraria:
 
 @pytest.fixture
 def settings(tmp_path: Path, fake_terraria: FakeTerraria) -> Settings:
+    # 所有会被写入的路径都必须落在 tmp_path 里，否则测试会污染线上目录
+    (tmp_path / "backup").mkdir(exist_ok=True)
     return Settings(
         worlds_dir=tmp_path / "worlds",
         config_file=tmp_path / "serverconfig.txt",
         control_dir=tmp_path / "control",
+        backup_dir=tmp_path / "backup",
         status_ttl=0.0,  # 测试里每次都刷新，避免缓存掩盖问题
         static_ttl=0.0,
         console_timeout=3.0,

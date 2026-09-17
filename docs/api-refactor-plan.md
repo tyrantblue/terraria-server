@@ -13,9 +13,13 @@
 | 阶段 | 状态 |
 | --- | --- |
 | P0 内部重构 + 契约基线 | ✅ 已完成（前端零改动，21 个旧端点响应形状逐个比对通过） |
-| P1 新增 `/api/v1` 与 `/api/meta` 之外的 v1 资源 | ⏳ 待做（`/api/meta` 已提前在 P0 交付） |
-| P2 前端迁移 + 配置持久化 + 任务化 | ⏳ 待做 |
-| P3 鉴权/审计/删旧接口 | ⏳ 待做（鉴权按「只有自己在用」的原则从简） |
+| P1 新增 `/api/v1`（22 条路由）+ 弃用头 + 埋点 | ✅ 已完成（1.2.0，旧接口全部标记 Sunset 2026-11-16） |
+| P2 配置持久化 + 世界操作任务化 + 备份 + 命令白名单 | ✅ 已完成（后端部分） |
+| P2 前端迁移到 v1 | ⏳ 等前端（后端双跑中，看 `/api/meta/usage`） |
+| P2 删旧接口 / P3 鉴权 | ⏳ 待做（鉴权按「只有自己在用」的原则从简） |
+
+> 实施细节见 §10；接口参考见 [`api/v1.md`](api/v1.md)；功能缺口见
+> [`roadmap.md`](roadmap.md)。
 
 ---
 
@@ -526,3 +530,44 @@ api/
 * 运行时 vs 持久配置的语义仍然混在一起（`maxplayers/motd/password/port` 重启即回退），
   计划 P2 用 `PUT /api/v1/config` 明确区分；
 * 无应用层鉴权（按「只有自己在用」的原则，只在来源 IP 白名单之上保持简单）。
+
+
+---
+
+## 10. P1 / P2 实施结果（2026-09-17，1.2.0）
+
+### 10.1 交付内容
+
+| 领域 | 接口 |
+| --- | --- |
+| 状态 | `GET /api/v1/server`（一次拿全，含带 IP 的玩家列表与世界/配置） |
+| 玩家 | `GET /api/v1/players`、`POST /api/v1/players/{name}/kick`、`POST`/`DELETE .../ban`、`GET /api/v1/bans`、`POST /api/v1/broadcast` |
+| 控制 | `POST /api/v1/server/actions`、`POST /api/v1/server/time`、`POST /api/v1/server/restart` |
+| 控制台 | `GET /api/v1/console`（逐行 `kind` + `since` 游标）、`WS /api/v1/console/stream`、`POST /api/v1/console/commands`（白名单+审计）、`GET /api/v1/console/audit` |
+| 配置 | `GET`/`PUT /api/v1/config`（原子持久化，runtime/restart 键区分） |
+| 世界 | `GET`/`POST /api/v1/worlds`、`DELETE /api/v1/worlds/{file}`、`.../activate`、`.../backup`、`GET /api/v1/backups` |
+| 长任务 | `GET /api/v1/operations`、`GET /api/v1/operations/{id}` |
+| 契约 | `GET /api/meta`（带 deprecations）、`GET /api/meta/usage` |
+
+### 10.2 几个刻意的取舍
+
+* **旧接口一个都没删**，只是加了 `Deprecation`/`Sunset`/`Link` 头和调用量埋点；
+  删之前先看 `/api/meta/usage`（按 `X-Client-Version` 分组）。
+* **踢人/封禁在线校验**：原版 `kick` 对不在线的名字也会返回成功，容易误导；
+  v1 先查 `playing`，不在线就 404。旧接口保持原样以免破坏前端。
+* **命令白名单**：v1 只放行 18 个命令，`exit`/`exit-nosave` 一律 403
+  （关服必须走 `server/restart`，它会保存并等待恢复）。旧接口仍是任意命令直通。
+* **`maxplayers < 64` 需要二次确认**：这是把「假满员」事故（见 `connection-guard.md`）
+  固化成接口约束，而不是靠文档提醒。
+* **`POST /api/world/switch` 保持同步**：虽然内部改成了操作框架，但旧响应体必须不变，
+  所以旧路由会等操作结束再返回（新增了 409 冲突这一种失败可能，已写进 CHANGELOG）。
+* **操作状态只在内存里**：单进程面板够用；重启后 404 即视为「结果未知」。
+
+### 10.3 测试
+
+`api/tests/` 84 个用例（P0 时 52），新增覆盖：v1 全部资源、操作互斥与进度、
+配置校验（含 `maxplayers` 二次确认、world 路径穿越）、控制台 `kind` 分类与游标、
+命令白名单与审计、弃用头与埋点。
+
+另外新增 `api/scripts/live_compat_check.py`：**默认只读**的线上比对（起因是曾经用
+`POST /api/server/motd` 探测把线上 MOTD 改成了 "m"，写接口现在一律交给假 Terraria 测）。

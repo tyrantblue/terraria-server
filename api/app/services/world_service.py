@@ -10,10 +10,14 @@ import time
 from pathlib import Path
 from typing import AsyncIterator, Protocol
 
+import shutil
+from datetime import datetime
+
 from app.core.errors import BadRequest, Conflict, NotFound, UpstreamFailed
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
 from app.services.console.log_reader import LogReader
+from app.services.operations import FAILED, SUCCEEDED, Operation, OperationRegistry
 from app.services.status import StatusCollector
 
 SWITCH_TIMEOUT = 30.0
@@ -33,12 +37,16 @@ class WorldService:
         channel: ConsoleChannel,
         status: StatusCollector,
         reader: LogReader,
+        operations: OperationRegistry,
+        backup_dir: Path,
     ) -> None:
         self.worlds_dir = worlds_dir
         self._config = config
         self._channel = channel
         self._status = status
         self._reader = reader
+        self._operations = operations
+        self.backup_dir = backup_dir
 
     # -- 查询 ---------------------------------------------------------
     def active_world_file(self) -> str | None:
@@ -83,18 +91,32 @@ class WorldService:
 
         return destination.stem, destination.name, destination.stat().st_size
 
-    # -- 切换 ---------------------------------------------------------
-    def switch(self, requested: str) -> str:
+    def resolve(self, requested: str) -> str:
+        """校验世界文件名，返回文件名。"""
         filename = Path(requested).name
-        if filename != requested:
+        if filename != requested or not filename.lower().endswith(".wld"):
             raise BadRequest("invalid filename")
-        if not filename.lower().endswith(".wld"):
-            raise BadRequest("only .wld files are allowed")
-
-        world_file = self.worlds_dir / filename
-        if not world_file.is_file():
+        if not (self.worlds_dir / filename).is_file():
             raise NotFound(f"world not found: {filename}")
+        return filename
 
+    def delete(self, requested: str) -> str:
+        filename = self.resolve(requested)
+        if filename == self.active_world_file():
+            raise Conflict("不能删除当前激活的世界，请先切换到别的世界")
+        (self.worlds_dir / filename).unlink()
+        return filename
+
+    # -- 切换（长任务） -------------------------------------------------
+    def activate(self, requested: str) -> Operation:
+        """切换世界：保存 → 改配置 → 重启。后台执行，返回操作句柄。"""
+        filename = self.resolve(requested)
+        return self._operations.submit(
+            "world.activate", lambda progress: self._activate_job(filename, progress)
+        )
+
+    def _activate_job(self, filename: str, progress) -> dict[str, object]:
+        progress(5, f"准备切换到 {filename}")
         # 1. 先保存当前世界（单向命令：save 会阻塞主循环数秒，不等回显）
         try:
             self._channel.send("save")
@@ -107,9 +129,11 @@ class WorldService:
         # 2. 修改 serverconfig.txt
         if not self._config.path.exists():
             raise UpstreamFailed("server config file not found")
+        progress(20, "写入 serverconfig.txt")
         self._config.set("world", f"/worlds/{filename}")
 
         # 3. 退出 Terraria（单向；进程随后退出，哨兵永远不会回来）
+        progress(30, "关闭服务端")
         try:
             self._channel.send("exit")
         except Exception as exc:  # noqa: BLE001
@@ -117,13 +141,80 @@ class WorldService:
 
         # 4. 等待服务端重新可用
         deadline = time.monotonic() + SWITCH_TIMEOUT
+        step = 0
         while time.monotonic() < deadline:
             try:
                 if "Terraria Server" in self._channel.run("version", timeout=2.0):
                     self._status.invalidate()
-                    return filename
+                    progress(95, "服务端已恢复")
+                    return {"world": filename}
             except Exception:  # noqa: BLE001 - 重启期间 FIFO 会短暂不可用
                 pass
+            step += 1
+            progress(min(90, 40 + step * 5), "等待服务端重新监听")
             time.sleep(1)
 
         raise UpstreamFailed("Terraria server did not restart within 30 seconds", status_code=504)
+
+    def activate_and_wait(self, requested: str, timeout: float = 90.0) -> str:
+        """旧接口 POST /api/world/switch 用：提交操作并同步等到结束。"""
+        operation = self.activate(requested)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and operation.state not in (SUCCEEDED, FAILED):
+            time.sleep(0.25)
+        if operation.state == SUCCEEDED:
+            return str((operation.result or {}).get("world", requested))
+        if operation.state == FAILED:
+            raise UpstreamFailed(operation.error or "world switch failed", status_code=504)
+        raise UpstreamFailed("world switch did not finish in time", status_code=504)
+
+    # -- 备份 ---------------------------------------------------------
+    def list_backups(self) -> list[dict[str, object]]:
+        if not self.backup_dir.is_dir():
+            return []
+        result: list[dict[str, object]] = []
+        for entry in sorted(self.backup_dir.iterdir(), reverse=True):
+            if not entry.is_dir():
+                continue
+            files = [p for p in entry.rglob("*") if p.is_file()]
+            result.append(
+                {
+                    "name": entry.name,
+                    "created_at": entry.stat().st_mtime,
+                    "files": len(files),
+                    "size": sum(p.stat().st_size for p in files),
+                }
+            )
+        return result
+
+    def backup(self, requested: str | None = None) -> Operation:
+        """把世界文件（可指定单个）与 serverconfig.txt 复制到 backup/<时间戳>/。"""
+        filename = self.resolve(requested) if requested else None
+        return self._operations.submit(
+            "world.backup", lambda progress: self._backup_job(filename, progress)
+        )
+
+    def _backup_job(self, filename: str | None, progress) -> dict[str, object]:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = self.backup_dir / stamp
+        target.mkdir(parents=True, exist_ok=True)
+        sources = (
+            [self.worlds_dir / filename]
+            if filename
+            else sorted(self.worlds_dir.glob("*.wld"))
+        )
+        if not sources:
+            raise NotFound("没有可备份的世界文件")
+
+        copied: list[str] = []
+        for index, source in enumerate(sources, start=1):
+            shutil.copy2(source, target / source.name)
+            copied.append(source.name)
+            progress(int(index / (len(sources) + 1) * 100), f"复制 {source.name}")
+
+        if self._config.path.exists():
+            shutil.copy2(self._config.path, target / self._config.path.name)
+            copied.append(self._config.path.name)
+
+        progress(100, "备份完成")
+        return {"backup": stamp, "files": copied}

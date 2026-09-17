@@ -16,6 +16,61 @@
 
 ---
 
+## [1.2.0] — 2026-09-17
+
+新增 `/api/v1` 接口面（资源导向 + 长任务 + 结构化控制台 + 配置持久化），
+并把整片旧接口标记为弃用（仍然可用）。**前端可以照常运行，无需改动**；
+要迁移的话照着 [v1.md](v1.md) 的对照表走即可。
+
+### Added
+
+* **`/api/v1` 接口面**（完整参考见 [v1.md](v1.md)）：
+  * `GET  /api/v1/server` —— 一次拿全版本/端口/上限/时间/种子/MOTD/玩家/世界/配置，
+    取代旧版「7 个查询型 POST + `/status` + `/world/list`」；
+  * `GET  /api/v1/players` —— **带 IP 与端口**的玩家列表；
+  * `POST /api/v1/players/{name}/kick`、`POST/DELETE /api/v1/players/{name}/ban`、
+    `GET /api/v1/bans` —— 玩家不在线时返回 404，不再「假装成功」；
+  * `POST /api/v1/broadcast`；
+  * `POST /api/v1/server/actions`（save/settle）、`POST /api/v1/server/time`；
+  * `POST /api/v1/server/restart` → **202 + operation_id**；
+  * `GET  /api/v1/console`（**每行带 `kind`**，支持 `since` 游标增量拉取）、
+    `WS /api/v1/console/stream`（JSON 事件）、
+    `POST /api/v1/console/commands`（**命令白名单 + 审计**，禁止 exit）、
+    `GET /api/v1/console/audit`；
+  * `GET/PUT /api/v1/config` —— 明确区分「写进 serverconfig.txt」与「立即生效」；
+  * `GET/POST /api/v1/worlds`、`DELETE /api/v1/worlds/{file}`、
+    `POST /api/v1/worlds/{file}/activate`、`POST /api/v1/worlds/{file}/backup`、
+    `GET /api/v1/backups`；
+  * `GET /api/v1/operations`、`GET /api/v1/operations/{id}` —— 长任务进度。
+* `GET /api/meta/usage` —— 被弃用接口的调用量（按客户端版本分组），
+  用来判断「前端已经迁完」再删旧接口。
+* 旧接口响应新增弃用头：`Deprecation` / `Sunset` / `Link` / `X-API-Deprecated`
+  （纯附加，不改状态码与响应体）。
+* 脚本 `api/scripts/live_compat_check.py`：**默认只读**的线上契约比对。
+
+### Changed
+
+* `PUT /api/v1/config` 写入 `serverconfig.txt` 是原子的，并保留注释与键顺序。
+* `maxplayers` **小于 64 需要二次确认**（`confirm_low_max_players: true`），否则 409：
+  原版会把每条陌生 TCP 连接都算进名额，8 个槽位很容易被扫描流量拖成「假满员」，
+  详见 `../connection-guard.md`。
+* 旧的 `POST /api/world/switch` 仍然同步返回同样的响应体，但内部改为走操作框架，
+  因此**新增**一种失败可能：已有重启类操作在跑时会返回 409 `conflict`
+  （以前会直接并发执行两个切换）。
+
+### Deprecated
+
+* 旧接口全部标记弃用，Sunset 定在 **2026-11-16**，替代品见 [v1.md](v1.md) 第 8 节。
+  删除前会先看 `GET /api/meta/usage` 的调用量。
+
+### Internal
+
+* 测试 52 → 84 个用例（新增 v1、操作互斥、配置校验、命令白名单、弃用头与埋点）。
+* 修复测试隔离问题：`Settings` 夹具现在覆盖 `backup_dir`，
+  避免测试往线上 `backup/` 目录写东西。
+
+---
+
 ## [1.1.0] — 2026-09-17
 
 后端内部重构（P0）。**URL、请求体、响应体全部保持不变**，前端无需改动。

@@ -9,6 +9,102 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from app.core.errors import BadRequest
+
+#: 允许通过 API 修改的键（白名单，避免把任意内容写进配置文件）
+EDITABLE_KEYS = {
+    "world",
+    "worldname",
+    "difficulty",
+    "maxplayers",
+    "port",
+    "password",
+    "motd",
+    "autocreate",
+    "seed",
+    "secure",
+    "upnp",
+    "npcstream",
+    "priority",
+    "language",
+}
+
+#: 这些键只影响「运行时」，改完可以直接用控制台命令生效，不必重启
+RUNTIME_KEYS = {"maxplayers", "motd", "password"}
+
+#: 这些键必须重启服务端才会生效
+RESTART_KEYS = {"world", "worldname", "difficulty", "port", "autocreate", "seed", "secure", "upnp", "language"}
+
+_INT_RANGES = {
+    "difficulty": (0, 3),
+    "maxplayers": (1, 255),
+    "port": (1, 65535),
+    "autocreate": (1, 3),
+    "secure": (0, 1),
+    "upnp": (0, 1),
+    "npcstream": (0, 60),
+    "priority": (0, 5),
+}
+
+_TEXT_KEYS = {"worldname", "password", "motd", "seed", "language", "world"}
+
+#: maxplayers 低于这个值时提示：原版会把扫描连接也算进名额，
+#: 8 个槽位很容易被「假满员」占满（见 docs/connection-guard.md）
+LOW_MAX_PLAYERS = 64
+
+
+def validate(values: dict[str, object]) -> dict[str, str]:
+    """校验并规范化待写入的配置项，返回 {key: 字符串值}。"""
+    unknown = set(values) - EDITABLE_KEYS
+    if unknown:
+        raise BadRequest(
+            f"不支持的配置项: {', '.join(sorted(unknown))}",
+            details={"editable_keys": sorted(EDITABLE_KEYS)},
+        )
+
+    normalized: dict[str, str] = {}
+    for key, raw in values.items():
+        if key in _INT_RANGES:
+            try:
+                number = int(str(raw).strip())
+            except (TypeError, ValueError):
+                raise BadRequest(f"{key} 必须是整数") from None
+            low, high = _INT_RANGES[key]
+            if not low <= number <= high:
+                raise BadRequest(f"{key} 必须在 {low}..{high} 之间")
+            normalized[key] = str(number)
+            continue
+
+        text = str(raw).replace("\r", "").replace("\n", " ").strip()
+        if key in _TEXT_KEYS:
+            if not text:
+                raise BadRequest(f"{key} 不能为空")
+            if len(text) > 512:
+                raise BadRequest(f"{key} 太长（最多 512 字符）")
+            if key == "world":
+                # 只接受文件名，杜绝路径穿越；写入时统一加 /worlds/ 前缀
+                name = Path(text).name
+                if name != text or not name.lower().endswith(".wld"):
+                    raise BadRequest("world 必须是形如 WSD.wld 的文件名")
+                normalized[key] = f"/worlds/{name}"
+                continue
+        normalized[key] = text
+    return normalized
+
+
+def world_filename(value: str | None) -> str | None:
+    """把配置里的 world 值（/worlds/x.wld）转换回文件名。"""
+    if not value:
+        return None
+    return Path(value).name
+
+
+def is_low_max_players(value: str | int) -> bool:
+    try:
+        return int(value) < LOW_MAX_PLAYERS
+    except (TypeError, ValueError):
+        return False
+
 
 class ConfigService:
     """读写 Terraria 的 serverconfig.txt，保留注释与原有顺序。"""

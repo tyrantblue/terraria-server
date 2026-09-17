@@ -18,9 +18,11 @@ from dataclasses import dataclass, field
 from app.services.console.channel import ConsoleChannel
 from app.services.console.log_reader import LogReader
 from app.services.console.parser import (
+    PlayerEntry,
     parse_game_time,
     parse_max_players,
     parse_motd,
+    parse_player_entries,
     parse_players,
     parse_port,
     parse_seed,
@@ -42,6 +44,8 @@ class ServerSnapshot:
     seed: str | None = None
     motd: str | None = None
     players: list[str] = field(default_factory=list)
+    #: v1 用：同上，但带 IP/端口
+    player_entries: list[PlayerEntry] = field(default_factory=list)
 
 
 class StatusCollector:
@@ -60,6 +64,7 @@ class StatusCollector:
         self._lock = threading.RLock()
         self._static: dict[str, object] = {}
         self._players: list[str] = []
+        self._player_entries: list[PlayerEntry] = []
         self._game_time: str | None = None
         self._static_at = 0.0
         self._dynamic_at = 0.0
@@ -73,6 +78,7 @@ class StatusCollector:
                 self._static_at = 0.0
             if dynamic:
                 self._players = []
+                self._player_entries = []
                 self._game_time = None
                 self._dynamic_at = 0.0
 
@@ -93,6 +99,14 @@ class StatusCollector:
                 self._refresh_dynamic()
             return list(self._players)
 
+    def player_entries(self) -> list[PlayerEntry]:
+        """v1 用：带 IP/端口的玩家列表。"""
+        with self._lock:
+            self._watch_log()
+            if time.monotonic() - self._dynamic_at >= self._ttl:
+                self._refresh_dynamic()
+            return list(self._player_entries)
+
     # -- 内部 ---------------------------------------------------------
     def _snapshot(self) -> ServerSnapshot:
         return ServerSnapshot(
@@ -103,6 +117,7 @@ class StatusCollector:
             seed=self._static.get("seed"),  # type: ignore[arg-type]
             motd=self._static.get("motd"),  # type: ignore[arg-type]
             players=list(self._players),
+            player_entries=list(self._player_entries),
         )
 
     def _refresh_static(self) -> None:
@@ -126,13 +141,16 @@ class StatusCollector:
     def _refresh_dynamic(self) -> None:
         try:
             game_time = parse_game_time(self._channel.run("time"))
-            players = parse_players(self._channel.run("playing"))
+            playing = self._channel.run("playing")
+            players = parse_players(playing)
+            entries = parse_player_entries(playing)
         except Exception:
             if not self._dynamic_at:
                 raise
             return
         self._game_time = game_time
         self._players = players
+        self._player_entries = entries
         self._dynamic_at = time.monotonic()
 
     def _watch_log(self) -> None:

@@ -16,8 +16,11 @@ from app.api import console as console_api
 from app.api import server as server_api
 from app.api import system as system_api
 from app.api import world as world_api
+from app.api.v1 import api_v1
+from app.core.deprecations import lookup as lookup_deprecation
 from app.core.errors import AppError
 from app.core.settings import API_VERSION
+from app.core.telemetry import telemetry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -68,10 +71,25 @@ def create_app() -> FastAPI:
         }
         return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers)
 
+    @app.middleware("http")
+    async def deprecation_headers(request: Request, call_next):
+        """给被弃用的旧路由加 Deprecation/Sunset/Link 头，并记录调用量。
+
+        纯附加行为：不改变状态码、不改变响应体，旧前端完全无感。
+        """
+        response = await call_next(request)
+        deprecation = lookup_deprecation(request.url.path)
+        if deprecation is not None:
+            for key, value in deprecation.headers().items():
+                response.headers[key] = value
+            telemetry.record(request.url.path, request.headers.get("X-Client-Version"))
+        return response
+
     app.include_router(system_api.router)
     app.include_router(server_api.router)
     app.include_router(world_api.router)
     app.include_router(console_api.router)
+    app.include_router(api_v1)
     return app
 
 

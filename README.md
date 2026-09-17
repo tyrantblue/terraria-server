@@ -468,31 +468,32 @@ Expected response:
 }
 ```
 
-### API contract & versioning
+### API versions
 
-The API follows a contract-first workflow so the frontend always knows what changed:
+`/api/v1` is the current surface (resource-oriented, long operations return `202` with an
+`operation_id`, structured console lines, persistent config). The legacy `/api/*` routes
+still work and now advertise `Deprecation`/`Sunset` headers.
 
-| Artifact | Purpose |
+| Document | Contents |
 | --- | --- |
-| `api/openapi.json` | Machine-readable contract snapshot, committed and checked in CI. Generate frontend types from it (`openapi-typescript`). |
-| `docs/api/CHANGELOG.md` | Human-readable change log with migration examples and Sunset dates. |
-| `GET /api/meta` | Runtime handshake: `api_version`, `min_client_version`, `server_version`, `capabilities`, `deprecations`. The panel calls it on load and can tell the user to refresh when versions mismatch. |
-| `/docs`, `/openapi.json` | FastAPI's built-in interactive docs and live schema. |
+| `docs/api/v1.md` | **Frontend reference for `/api/v1`** (endpoints, payloads, migration table) |
+| `docs/api/CHANGELOG.md` | Every contract change, with migration examples and Sunset dates |
+| `docs/roadmap.md` | Planned features and known gaps |
 
-Contract changes are additive first: old routes keep working while new ones are added,
-deprecated routes advertise `Deprecation`/`Sunset` headers, and removal only happens in a
-major version. To regenerate the snapshot:
+Contract changes are additive first: old routes keep working while new ones are added, and
+removal only happens in a major version after `GET /api/meta/usage` shows the old routes are
+unused. To regenerate the snapshot:
 
 ```bash
 cd api
 uv run python scripts/export_openapi.py          # update api/openapi.json
 uv run python scripts/export_openapi.py --check  # CI: fail if the snapshot is stale
+uv run pytest -q                                 # tests (fake FIFO/fake log, no real server)
 ```
 
 Refactor roadmap and design notes: `docs/api-refactor-plan.md`.
 
 ---
-
 # 15. Important API Endpoints
 
 ## System

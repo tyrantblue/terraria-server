@@ -29,7 +29,8 @@ async def upload_world(rt: RuntimeDep, file: UploadFile = File(...)) -> dict[str
 
 @router.post("/switch", response_model=WorldSwitchResponse)
 def switch_world(request: SwitchWorldRequest, rt: RuntimeDep) -> dict[str, object]:
-    filename = rt.world.switch(request.file)
+    # v1 里切换是后台操作；旧接口保持同步语义（等操作结束再返回同样的响应体）
+    filename = rt.world.activate_and_wait(request.file)
     return {
         "success": True,
         "world": filename,

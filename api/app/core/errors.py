@@ -64,6 +64,11 @@ class Conflict(AppError):
     code = "conflict"
 
 
+class Forbidden(AppError):
+    status_code = 403
+    code = "forbidden"
+
+
 class UpstreamFailed(AppError):
     """Terraria 服务端返回了不符合预期的结果。"""
 

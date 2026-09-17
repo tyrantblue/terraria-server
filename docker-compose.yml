@@ -36,6 +36,9 @@ services:
       - ./control:/opt/terraria/control
       - ./config:/opt/terraria/config
       - ./worlds:/opt/terraria/worlds
+      # 备份必须落在宿主机上（API 的 /api/v1/worlds/{file}/backup 会写这里）。
+      # 少挂这一条时备份会写进容器可写层，容器一重建就没了。
+      - ./backup:/opt/terraria/backup
 
   # ---------------------------------------------------------------------------
   # 连接守卫：把扫描/探测连接挡在 7777 之外，并在“假满员”时自动恢复。

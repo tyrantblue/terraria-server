@@ -31,7 +31,7 @@ def _env_int(name: str, default: int) -> int:
 
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.1.0")
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.2.0")
 
 #: 前端构建时对应的 API 版本；后端比它高太多时前端应提示用户刷新面板。
 MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.0.0")
@@ -44,6 +44,7 @@ class Settings:
     worlds_dir: Path = _env_path("TERRARIA_WORLDS_DIR", "/opt/terraria/worlds")
     config_file: Path = _env_path("TERRARIA_CONFIG_FILE", "/opt/terraria/config/serverconfig.txt")
     control_dir: Path = _env_path("TERRARIA_CONTROL_DIR", "/opt/terraria/control")
+    backup_dir: Path = _env_path("TERRARIA_BACKUP_DIR", "/opt/terraria/backup")
 
     api_version: str = API_VERSION
     min_client_version: str = MIN_CLIENT_VERSION
