@@ -12,6 +12,7 @@ from functools import lru_cache
 from app.core.settings import Settings
 from app.services.banlist import BanList
 from app.services.console.audit import AuditLog
+from app.services.guard_client import GuardClient
 from app.services.log_events import LogEventWatcher
 from app.services.notifications import Notifier
 from app.services.config_service import ConfigService
@@ -39,6 +40,7 @@ class Runtime:
     notifier: Notifier
     events: LogEventWatcher
     scheduler: Scheduler
+    guard: GuardClient
 
 
 def build_job_specs(
@@ -174,6 +176,10 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         notifier=notifier,
         events=LogEventWatcher(reader, notifier),
         scheduler=scheduler,
+        guard=GuardClient(
+            settings.control_dir / "guard-state.json",
+            settings.control_dir / "guard-commands.jsonl",
+        ),
     )
 
 

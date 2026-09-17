@@ -58,10 +58,10 @@ services:
       SCHEDULE_RESTART_AT: "05:00"       # 每天 05:00（SCHEDULE_TZ）重启；留空 = 关闭
       SCHEDULE_RESTART_SKIP_IF_PLAYERS: "1"
       SCHEDULE_RESTART_WARN_MINUTES: "5"
-      # ---- 事件通知（webhook）；留空即关闭 ----
-      NOTIFY_WEBHOOK_URL: ""
-      NOTIFY_FORMAT: "auto"              # auto | discord | slack | json
-      NOTIFY_EVENTS: ""                  # 逗号分隔；空 = 全部
+      # ---- 事件通知（webhook）；URL 放在 .env 里（不进 Git），留空即关闭 ----
+      NOTIFY_WEBHOOK_URL: "${NOTIFY_WEBHOOK_URL:-}"
+      NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json
+      NOTIFY_EVENTS: "${NOTIFY_EVENTS:-}"       # 逗号分隔；空 = 全部
 
   # ---------------------------------------------------------------------------
   # 连接守卫：把扫描/探测连接挡在 7777 之外，并在“假满员”时自动恢复。

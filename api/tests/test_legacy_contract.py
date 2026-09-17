@@ -111,7 +111,7 @@ def test_max_players_range_still_validated(client) -> None:
 
 def test_meta_handshake(client) -> None:
     body = client.get("/api/meta").json()
-    assert body["api_version"] == "1.3.0"
+    assert body["api_version"] == "1.4.0"
     assert body["min_client_version"] == "1.0.0"
     assert body["server_version"] == "1.4.5.8"
     assert "world.switch" in body["capabilities"]

@@ -1,13 +1,16 @@
 """事件通知（webhook）。
 
-支持 Discord / Slack / 通用 JSON 三种载荷。用标准库 urllib + 单个后台线程发送，
-不阻塞请求也不阻塞调度线程；投递结果保留最近若干条，面板可以自查。
+支持 Discord / Slack / 飞书 / 通用 JSON 四种载荷。用标准库 urllib + 单个后台线程
+发送，不阻塞请求也不阻塞调度线程；投递结果保留最近若干条，面板可以自查。
 
 配置（环境变量，见 core/settings.py）：
 
-    NOTIFY_WEBHOOK_URL=https://discord.com/api/webhooks/...
-    NOTIFY_FORMAT=auto|discord|slack|json      # auto 按 URL 猜
-    NOTIFY_EVENTS=player_join,player_leave,... # 空 = 全部
+    NOTIFY_WEBHOOK_URL=https://open.feishu.cn/open-apis/bot/v2/hook/...
+    NOTIFY_FORMAT=auto|discord|slack|feishu|json   # auto 按 URL 猜
+    NOTIFY_EVENTS=player_join,player_leave,...     # 空 = 全部
+
+飞书的坑：它 HTTP 状态码永远是 200，失败信息在响应体的 `code`/`StatusCode` 里，
+所以这里会额外解析响应体，避免"看起来投递成功其实没发出去"。
 """
 
 from __future__ import annotations
@@ -52,6 +55,21 @@ class Delivery:
         }
 
 
+def _check_feishu(body: str) -> tuple[bool, str | None]:
+    """飞书永远返回 HTTP 200，真正的结果在响应体里。"""
+    if not body:
+        return True, None
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return True, None
+    code = payload.get("code", payload.get("StatusCode", 0))
+    if code in (0, None):
+        return True, None
+    message = payload.get("msg") or payload.get("StatusMessage") or f"feishu code={code}"
+    return False, str(message)
+
+
 def mask_url(url: str) -> str:
     """只露出主机名——webhook URL 本身就是凭据，不能原样回给前端。"""
     if not url:
@@ -86,6 +104,20 @@ class Notifier:
     def enabled(self) -> bool:
         return bool(self.url)
 
+    @property
+    def effective_format(self) -> str:
+        """auto 时按 URL 猜：discord / slack / feishu，都不是就用通用 json。"""
+        if self.fmt != "auto":
+            return self.fmt
+        host = urlsplit(self.url).netloc.lower()
+        if "discord" in host:
+            return "discord"
+        if "slack" in host:
+            return "slack"
+        if "feishu" in host or "larksuite" in host or "lark" in host:
+            return "feishu"
+        return "json"
+
     def start(self) -> None:
         if not self.enabled or (self._thread and self._thread.is_alive()):
             return
@@ -106,7 +138,7 @@ class Notifier:
         return {
             "enabled": self.enabled,
             "url": mask_url(self.url),
-            "format": self.fmt,
+            "format": self.effective_format,
             "events": sorted(self.events) if self.events else "all",
             "deliveries": deliveries,
         }
@@ -149,8 +181,11 @@ class Notifier:
         delivery = Delivery(ts=time.time(), event=event, title=title, ok=False)
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                delivery.ok = 200 <= response.status < 300
+                body = response.read().decode("utf-8", errors="replace")
                 delivery.status = response.status
+                delivery.ok = 200 <= response.status < 300
+                if delivery.ok and self.effective_format == "feishu":
+                    delivery.ok, delivery.error = _check_feishu(body)
         except urllib.error.HTTPError as exc:
             delivery.status = exc.code
             delivery.error = f"HTTP {exc.code}"
@@ -163,7 +198,7 @@ class Notifier:
             del self._deliveries[self._capacity :]
         return delivery
 
-    def _payload(self, event: str, title: str, detail: dict, level: str) -> dict:
+    def _payload(self, event: str, title: str, detail: dict, level: str) -> dict:  # noqa: D102
         icon = LEVEL_ICON.get(level, "")
         text = f"{icon} {title}".strip()
         if detail:
@@ -171,15 +206,14 @@ class Notifier:
             if extra:
                 text += f"\n{extra}"
 
-        fmt = self.fmt
-        if fmt == "auto":
-            host = urlsplit(self.url).netloc
-            fmt = "discord" if "discord" in host else "slack" if "slack" in host else "json"
-
+        fmt = self.effective_format
         if fmt == "discord":
             return {"content": text[:1900]}
         if fmt == "slack":
             return {"text": text[:3000]}
+        if fmt == "feishu":
+            # 飞书自定义机器人：纯文本
+            return {"msg_type": "text", "content": {"text": text[:4000]}}
         return {
             "event": event,
             "level": level,

@@ -16,6 +16,44 @@
 
 ---
 
+## [1.4.0] — 2026-09-17
+
+两件事：**连接守卫可视化**（roadmap 第 2 项）与**飞书通知支持**。
+
+### Added
+
+* **`/api/v1/guard`**：把守卫进程的状态暴露给面板，并支持手动操作。
+  * `GET /api/v1/guard` —— 白名单（区分 `static`/`learned`，带过期时间）、
+    被封 IP 与剩余时间、计数器（累计封禁数/命令数/学习数/降级次数）、
+    `available`/`stale`/`age`。守卫没在运行也返回 200（`available: false`），
+    面板可以直接显示「守卫已停止」，不会因为 5xx 白屏。
+  * `POST /api/v1/guard/bans` `{ip, seconds?}` / `DELETE /api/v1/guard/bans/{ip}` —— 手动封禁/解封。
+  * `POST /api/v1/guard/allow` `{ip}` / `DELETE /api/v1/guard/allow/{ip}` ——
+    加入白名单会**写进 `guard/allow.txt`**（重启不丢）并立即对 ipset 生效；移除会同时清静态与学习型名单。
+  * `POST /api/v1/guard/reload` —— 手工改过白名单文件后重新同步 ipset。
+  * 守卫没运行时下发命令返回 **503** `guard_unavailable`，不会假装成功。
+* **飞书（Lark）webhook 支持**：`NOTIFY_FORMAT=feishu`（`auto` 会按 URL 自动识别）。
+  飞书的 HTTP 状态码恒为 200、真正的结果在响应体的 `code` 里，所以额外解析响应体，
+  避免"看起来投递成功其实没发出去"。webhook URL 建议放 `.env`（已被 gitignore），
+  仓库里提供 `.env.example`。
+
+### Changed
+
+* `NOTIFY_WEBHOOK_URL` / `NOTIFY_FORMAT` / `NOTIFY_EVENTS` 改为从 `.env` 读取
+  （`docker-compose.yml` 里是 `${...:-}`），避免密钥进 Git。
+
+### Internal
+
+* 守卫与 API 之间用**文件 IPC**，而不是让 API 拿 ipset/NET_ADMIN 权限：
+  * `control/guard-state.json` —— 守卫写（每 5 秒 + 每次命令后）、API 读；
+  * `control/guard-commands.jsonl` —— API 追加一行 JSON、守卫消费并把结果写回状态文件。
+  API 是公网暴露面，不给它防火墙权限是刻意的架构选择。
+* 测试 133 → **152**（新增 `test_guard_api.py` 用假守卫测 API 侧、
+  `test_guard_control.py` 直接驱动真守卫测命令执行与状态发布）。
+* 新增前端改造指南：[`frontend-migration.md`](frontend-migration.md)。
+
+---
+
 ## [1.3.0] — 2026-09-17
 
 按 `../roadmap.md` 的 P1 清单继续开发：**定时任务、备份恢复、事件通知、日志时间戳+轮转**。

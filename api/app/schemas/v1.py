@@ -257,3 +257,51 @@ class NotificationStatus(BaseModel):
     format: str
     events: list[str] | str
     deliveries: list[DeliveryView]
+
+
+# ---------------------------------------------------------------- guard
+class GuardAllowEntry(BaseModel):
+    ip: str
+    source: str          # static | learned
+    expires_at: float | None = None
+
+
+class GuardBanEntry(BaseModel):
+    ip: str
+    expires_at: float | None = None
+
+
+class GuardCounters(BaseModel):
+    bans_total: int = 0
+    commands_total: int = 0
+    learned_total: int = 0
+    degraded_console: int = 0
+
+
+class GuardState(BaseModel):
+    """守卫进程的连接守卫状态（防扫描/白名单/封禁）。"""
+
+    available: bool
+    stale: bool = False
+    age: float = 0.0
+    updated_at: float | None = None
+    port: int | None = None
+    allowlist_only: bool = False
+    allow: list[GuardAllowEntry] = Field(default_factory=list)
+    banned: list[GuardBanEntry] = Field(default_factory=list)
+    counters: GuardCounters = Field(default_factory=GuardCounters)
+
+
+class GuardIpRequest(BaseModel):
+    ip: str
+
+
+class GuardBanRequest(BaseModel):
+    ip: str
+    seconds: int | None = Field(default=None, ge=60, le=604800)
+
+
+class GuardActionResult(BaseModel):
+    ok: bool
+    message: str
+    command_id: str | None = None

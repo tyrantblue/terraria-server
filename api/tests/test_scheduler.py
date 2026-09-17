@@ -145,3 +145,34 @@ def test_scheduler_api(client) -> None:
     assert body["enabled"] is False          # 测试环境禁用了后台线程
     assert body["timezone"] == "Asia/Shanghai"
     assert client.post("/api/v1/scheduler/__nope__/run").status_code == 404
+
+
+def test_on_result_hook_fires_for_automatic_runs(tmp_path) -> None:
+    """自动执行（非手动）必须回调，否则 webhook 通知就永远发不出去。"""
+    seen: list[tuple[str, str]] = []
+    specs = [JobSpec(name="backup", kind=INTERVAL, interval_seconds=60, runner=lambda: "backup=x")]
+    scheduler = Scheduler(specs, on_result=lambda n, s, d: seen.append((n, s)))
+    spec = scheduler.specs["backup"]
+    scheduler._execute(spec, manual=False)     # 模拟到点自动执行
+    assert seen == [("backup", "succeeded")]
+
+
+def test_job_result_notifier_maps_events(rt) -> None:
+    sent: list[tuple[str, str]] = []
+
+    class Recorder:
+        def notify(self, event, title, *, level="info", detail=None):
+            sent.append((event, level))
+
+    from app.services.runtime import _job_result_notifier
+
+    hook = _job_result_notifier(Recorder())
+    hook("backup", "succeeded", "backup=20260101")
+    hook("restart", "skipped", "skipped: 1 人在线")
+    hook("save", "failed", "boom")
+    hook("save", "succeeded", "saved")
+    assert sent == [
+        ("backup_done", "success"),
+        ("restart_skipped", "warning"),
+        ("schedule_failed", "error"),
+    ]

@@ -412,6 +412,221 @@
         "title": "DeliveryView",
         "type": "object"
       },
+      "GuardActionResult": {
+        "properties": {
+          "command_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Command Id"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "message"
+        ],
+        "title": "GuardActionResult",
+        "type": "object"
+      },
+      "GuardAllowEntry": {
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "ip": {
+            "title": "Ip",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip",
+          "source"
+        ],
+        "title": "GuardAllowEntry",
+        "type": "object"
+      },
+      "GuardBanEntry": {
+        "properties": {
+          "expires_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "ip": {
+            "title": "Ip",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip"
+        ],
+        "title": "GuardBanEntry",
+        "type": "object"
+      },
+      "GuardBanRequest": {
+        "properties": {
+          "ip": {
+            "title": "Ip",
+            "type": "string"
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "maximum": 604800.0,
+                "minimum": 60.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds"
+          }
+        },
+        "required": [
+          "ip"
+        ],
+        "title": "GuardBanRequest",
+        "type": "object"
+      },
+      "GuardCounters": {
+        "properties": {
+          "bans_total": {
+            "default": 0,
+            "title": "Bans Total",
+            "type": "integer"
+          },
+          "commands_total": {
+            "default": 0,
+            "title": "Commands Total",
+            "type": "integer"
+          },
+          "degraded_console": {
+            "default": 0,
+            "title": "Degraded Console",
+            "type": "integer"
+          },
+          "learned_total": {
+            "default": 0,
+            "title": "Learned Total",
+            "type": "integer"
+          }
+        },
+        "title": "GuardCounters",
+        "type": "object"
+      },
+      "GuardIpRequest": {
+        "properties": {
+          "ip": {
+            "title": "Ip",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ip"
+        ],
+        "title": "GuardIpRequest",
+        "type": "object"
+      },
+      "GuardState": {
+        "description": "守卫进程的连接守卫状态（防扫描/白名单/封禁）。",
+        "properties": {
+          "age": {
+            "default": 0.0,
+            "title": "Age",
+            "type": "number"
+          },
+          "allow": {
+            "items": {
+              "$ref": "#/components/schemas/GuardAllowEntry"
+            },
+            "title": "Allow",
+            "type": "array"
+          },
+          "allowlist_only": {
+            "default": false,
+            "title": "Allowlist Only",
+            "type": "boolean"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "banned": {
+            "items": {
+              "$ref": "#/components/schemas/GuardBanEntry"
+            },
+            "title": "Banned",
+            "type": "array"
+          },
+          "counters": {
+            "$ref": "#/components/schemas/GuardCounters"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Port"
+          },
+          "stale": {
+            "default": false,
+            "title": "Stale",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "available"
+        ],
+        "title": "GuardState",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1784,7 +1999,7 @@
   },
   "info": {
     "title": "Terraria Server API",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2717,6 +2932,218 @@
         "summary": "Run Command",
         "tags": [
           "v1:console"
+        ]
+      }
+    },
+    "/api/v1/guard": {
+      "get": {
+        "description": "即使守卫不在也返回 200（available=false），方便面板显示\"守卫已停止\"。",
+        "operationId": "get_guard_api_v1_guard_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Guard",
+        "tags": [
+          "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/guard/allow": {
+      "post": {
+        "description": "加入静态白名单：写进 guard/allow.txt 并立即对 tg_allow 生效（重启不丢）。",
+        "operationId": "allow_ip_api_v1_guard_allow_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardIpRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Allow Ip",
+        "tags": [
+          "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/guard/allow/{ip}": {
+      "delete": {
+        "description": "移出白名单（静态与学习型都清），如果已不在任何名单里就只做解封。",
+        "operationId": "disallow_ip_api_v1_guard_allow__ip__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ip",
+            "required": true,
+            "schema": {
+              "title": "Ip",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Disallow Ip",
+        "tags": [
+          "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/guard/bans": {
+      "post": {
+        "operationId": "ban_ip_api_v1_guard_bans_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GuardBanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ban Ip",
+        "tags": [
+          "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/guard/bans/{ip}": {
+      "delete": {
+        "operationId": "unban_ip_api_v1_guard_bans__ip__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ip",
+            "required": true,
+            "schema": {
+              "title": "Ip",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Unban Ip",
+        "tags": [
+          "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/guard/reload": {
+      "post": {
+        "description": "按两个白名单文件重新同步 tg_allow（手工改过文件后用它）。",
+        "operationId": "reload_guard_api_v1_guard_reload_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuardActionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reload Guard",
+        "tags": [
+          "v1:guard"
         ]
       }
     },

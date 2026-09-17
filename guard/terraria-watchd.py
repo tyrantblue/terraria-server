@@ -43,6 +43,7 @@ import argparse
 import errno
 import fcntl
 import ipaddress
+import json
 import os
 import re
 import shutil
@@ -76,6 +77,15 @@ CONSOLE_SENTINEL = os.environ.get("TERRARIA_CONSOLE_SENTINEL", "kick")
 CONSOLE_FENCE = b"Usage: kick <player>"
 CONSOLE_LOCK_FILE = CONTROL_DIR / "console.lock"
 CONSOLE_LOCK_TIMEOUT = float(os.environ.get("TERRARIA_CONSOLE_LOCK_TIMEOUT", "5"))
+
+# 与 API 的文件 IPC（双方都挂载了 control/，所以不需要网络端口、也不给 API 特权）：
+#   guard-state.json    —— 守卫写、API 读：白名单/封禁/计数器快照
+#   guard-commands.jsonl —— API 追加、守卫消费：{"id","action","args","ts"}
+STATE_FILE = CONTROL_DIR / "guard-state.json"
+COMMAND_FILE = CONTROL_DIR / "guard-commands.jsonl"
+STATE_INTERVAL = float(os.environ.get("TERRARIA_GUARD_STATE_INTERVAL", "5"))
+COMMAND_MAX_AGE = float(os.environ.get("TERRARIA_GUARD_COMMAND_MAX_AGE", "300"))
+ALLOWLIST_ONLY = os.environ.get("ALLOWLIST_ONLY", "0") == "1"
 
 # 判定参数
 STRIKES = int(os.environ.get("STRIKES", "5"))            # 窗口内达到几次可疑连接就封
@@ -155,6 +165,8 @@ class Firewall:
         # iptables 兜底模式下的封禁到期时间
         self.rules: dict[str, float] = {}
         self.bans_this_min: deque[float] = deque()
+        #: 累计封禁次数（状态快照里给面板看）
+        self.ban_count = 0
 
     # -- 内部 ---------------------------------------------------------
     def _run(self, argv: list[str]) -> bool:
@@ -201,6 +213,7 @@ class Firewall:
 
         if ok:
             self.bans_this_min.append(now())
+            self.ban_count += 1
             print(f"[ban] {ip} 封禁 {seconds}s")
 
     def allow(self, ip: str) -> bool:
@@ -214,6 +227,50 @@ class Firewall:
         if not self.has_ipset:
             return False
         return self._run(["ipset", "del", ALLOW_SET, ip])
+
+    # -- 供状态发布/命令通道使用 ------------------------------------------
+    def _capture(self, argv: list[str]) -> tuple[bool, str]:
+        """执行命令并拿到输出（用于 ipset save/list）。"""
+        if self.dry_run:
+            return True, ""
+        try:
+            result = subprocess.run(argv, check=True, capture_output=True, text=True)
+            return True, result.stdout
+        except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+            message = getattr(exc, "stderr", "") or str(exc)
+            return False, message
+
+    def set_members(self, name: str) -> list[dict[str, object]]:
+        """`ipset save <set>` 解析成 [{ip, expires_at}]（expires_at 由 timeout 推算）。"""
+        ok, output = self._capture(["ipset", "save", name])
+        if not ok:
+            return []
+        now = time.time()
+        members: list[dict[str, object]] = []
+        for line in output.splitlines():
+            parts = line.split()
+            if len(parts) < 3 or parts[0] != "add" or parts[1] != name:
+                continue
+            entry: dict[str, object] = {"ip": parts[2], "expires_at": None}
+            if "timeout" in parts:
+                index = parts.index("timeout")
+                if index + 1 < len(parts):
+                    try:
+                        entry["expires_at"] = now + int(parts[index + 1])
+                    except ValueError:
+                        pass
+            members.append(entry)
+        return sorted(members, key=lambda item: str(item["ip"]))
+
+    def add_allow(self, ip: str) -> bool:
+        if not self.has_ipset:
+            return False
+        return self._run(["ipset", "add", ALLOW_SET, ip, "-exist"])
+
+    def del_ban(self, ip: str) -> bool:
+        if not self.has_ipset:
+            return False
+        return self._run(["ipset", "del", BAN_SET, ip])
 
     def sweep(self) -> None:
         """iptables 兜底模式下清理过期规则。"""
@@ -368,6 +425,216 @@ class Console:
         return result
 
 
+
+# ---------------------------------------------------------------- 与 API 的 IPC
+class GuardControl:
+    """把守卫的状态发布给 API，并消费 API 下发的命令。
+
+    为什么用文件而不是 HTTP：
+
+    * ipset 需要 NET_ADMIN，只有守卫容器有；API 是公网暴露面，不应该拿到这个权限；
+    * 两个容器本来就共享 control/ 挂载，文件 IPC 不需要额外端口、不需要网络可达性；
+    * 守卫重启后仍能读到未处理的命令，API 重启也能立刻读到最新状态。
+
+    命令格式（API 追加一行 JSON）：
+        {"id": "a1b2c3", "action": "ban", "args": {"ip": "1.2.3.4", "seconds": 3600}}
+    结果写在 guard-state.json 的 results 里，API 轮询取回。
+    """
+
+    ACTIONS = {"ban", "unban", "allow", "disallow", "reload"}
+
+    def __init__(
+        self,
+        firewall: "Firewall",
+        watchdog: "Watchdog",
+        *,
+        allow_file: Path = ALLOW_FILE,
+        learned_file: Path = LEARNED_ALLOW_FILE,
+        state_file: Path = STATE_FILE,
+        command_file: Path = COMMAND_FILE,
+        port: int = PORT,
+        dry_run: bool = False,
+    ) -> None:
+        self.fw = firewall
+        self.watchdog = watchdog
+        self.allow_file = allow_file
+        self.learned_file = learned_file
+        self.state_file = state_file
+        self.command_file = command_file
+        self.port = port
+        self.dry_run = dry_run
+        self._offset = 0
+        self._last_publish = 0.0
+        self._results: dict[str, dict[str, object]] = {}
+        self._commands_total = 0
+
+    # -- 主循环调用 ---------------------------------------------------
+    def tick(self) -> None:
+        self.poll_commands()
+        if time.monotonic() - self._last_publish >= STATE_INTERVAL:
+            self.publish()
+
+    # -- 命令 ---------------------------------------------------------
+    def poll_commands(self) -> None:
+        if self.dry_run or not self.command_file.exists():
+            return
+        try:
+            size = self.command_file.stat().st_size
+        except OSError:
+            return
+        if size < self._offset:  # 文件被清空
+            self._offset = 0
+        if size == self._offset:
+            return
+        try:
+            with self.command_file.open("r", encoding="utf-8", errors="replace") as handle:
+                handle.seek(self._offset)
+                lines = handle.readlines()
+                self._offset = handle.tell()
+        except OSError:
+            return
+
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except ValueError:
+                continue
+            command_id = str(payload.get("id") or "")
+            action = str(payload.get("action") or "")
+            args = payload.get("args") or {}
+            created = float(payload.get("ts") or time.time())
+            if time.time() - created > COMMAND_MAX_AGE:
+                self._record(command_id, False, "命令已过期（守卫当时没在运行）")
+                continue
+            ok, message = self._execute(action, args)
+            self._commands_total += 1
+            self._record(command_id, ok, message)
+        self.publish()
+
+    def _record(self, command_id: str, ok: bool, message: str) -> None:
+        if not command_id:
+            return
+        self._results[command_id] = {"ok": ok, "message": message, "ts": time.time()}
+        if len(self._results) > 100:
+            for stale in sorted(self._results, key=lambda k: self._results[k]["ts"])[:50]:
+                self._results.pop(stale, None)
+
+    def _execute(self, action: str, args: dict) -> tuple[bool, str]:
+        if action not in self.ACTIONS:
+            return False, f"未知动作: {action}"
+        ip = str(args.get("ip") or "").strip()
+        if action != "reload" and not ip:
+            return False, "缺少 ip"
+        if ip and not re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", ip):
+            return False, f"ip 格式不对: {ip}"
+
+        if action == "ban":
+            seconds = int(args.get("seconds") or BAN_TIME)
+            self.fw.ban(ip, seconds)
+            return True, f"{ip} 已封禁 {seconds}s"
+        if action == "unban":
+            self.fw.del_ban(ip)
+            self.watchdog.strikes.pop(ip, None)
+            return True, f"{ip} 已解封"
+        if action == "allow":
+            self._write_allow(ip, add=True)
+            self.fw.add_allow(ip)
+            return True, f"{ip} 已加入白名单（写入 allow.txt 并立即生效）"
+        if action == "disallow":
+            removed = self._write_allow(ip, add=False)
+            self.watchdog.learned.pop(ip, None)
+            if not self._in_files(ip):
+                self.fw.disallow(ip)
+            return True, (f"{ip} 已移出白名单" if removed else f"{ip} 本来就不在白名单里")
+        if action == "reload":
+            count = self.sync_allow()
+            return True, f"白名单已重新同步（{count} 条）"
+        return False, "未处理的动作"
+
+    # -- 白名单文件 ---------------------------------------------------
+    def _read_file(self, path: Path) -> list[str]:
+        if not path.exists():
+            return []
+        entries: list[str] = []
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            entry = raw.split("#", 1)[0].strip()
+            if entry:
+                entries.append(entry)
+        return entries
+
+    def _write_allow(self, ip: str, *, add: bool) -> bool:
+        """把 ip 加进/移出 allow.txt（保留注释与其它行）。"""
+        lines = self.allow_file.read_text(encoding="utf-8").splitlines() if self.allow_file.exists() else []
+        present = any(line.split("#", 1)[0].strip() == ip for line in lines)
+        if add and present:
+            return False
+        if not add and not present:
+            return False
+        if add:
+            lines.append(ip)
+        else:
+            lines = [line for line in lines if line.split("#", 1)[0].strip() != ip]
+        tmp = self.allow_file.with_name(self.allow_file.name + ".tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        os.replace(tmp, self.allow_file)
+        return True
+
+    def _in_files(self, ip: str) -> bool:
+        return ip in self._read_file(self.allow_file) or ip in self._read_file(self.learned_file)
+
+    def sync_allow(self) -> int:
+        """让 tg_allow 与两个白名单文件保持一致（文件是唯一真源）。"""
+        desired = set(self._read_file(self.allow_file)) | set(self._read_file(self.learned_file))
+        current = {str(item["ip"]) for item in self.fw.set_members(ALLOW_SET)}
+        for ip in desired - current:
+            self.fw.add_allow(ip)
+        for ip in current - desired:
+            self.fw.disallow(ip)
+        return len(desired)
+
+    # -- 状态发布 -----------------------------------------------------
+    def publish(self) -> None:
+        if self.dry_run:
+            return
+        static = self._read_file(self.allow_file)
+        allow = []
+        for item in self.fw.set_members(ALLOW_SET):
+            ip = str(item["ip"])
+            allow.append(
+                {
+                    "ip": ip,
+                    "source": "static" if ip in static else "learned",
+                    "expires_at": item.get("expires_at"),
+                }
+            )
+        state = {
+            "updated_at": time.time(),
+            "pid": os.getpid(),
+            "port": self.port,
+            "allowlist_only": ALLOWLIST_ONLY,
+            "allow": allow,
+            "banned": self.fw.set_members(BAN_SET),
+            "counters": {
+                "bans_total": self.fw.ban_count,
+                "commands_total": self._commands_total,
+                "learned_total": len(self.watchdog.learned),
+                "degraded_console": self.watchdog.console.degraded_count
+                if hasattr(self.watchdog.console, "degraded_count")
+                else 0,
+            },
+            "results": self._results,
+        }
+        try:
+            tmp = self.state_file.with_name(self.state_file.name + ".tmp")
+            tmp.write_text(json.dumps(state, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self.state_file)
+        except OSError as exc:
+            print(f"[warn] 写入守卫状态失败: {exc}", file=sys.stderr)
+
+
 # ---------------------------------------------------------------- 守护主体
 class Watchdog:
     def __init__(self, args: argparse.Namespace) -> None:
@@ -393,6 +660,8 @@ class Watchdog:
         self.learned: dict[str, int] = {}          # ip -> 过期时间戳（0=永久）
         self.learn_queue: deque[tuple[str, float]] = deque()  # (玩家名, 到期检查时间)
         self.last_prune = 0.0
+        #: 与 API 的文件 IPC（状态快照 + 命令消费）
+        self.control = GuardControl(self.fw, self, dry_run=self.args.dry_run)
 
     # -- 学习型白名单 -------------------------------------------------
     def load_learned(self) -> None:
@@ -666,6 +935,7 @@ class Watchdog:
                         offset = fh.tell()
             except OSError as exc:
                 print(f"[warn] 读取日志失败: {exc}", file=sys.stderr)
+            self.control.tick()
             if not self.warmup:
                 self.process_learn_queue()
                 self.prune_learned()
