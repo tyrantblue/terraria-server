@@ -40,6 +40,8 @@ systemd 常驻见 guard/systemd/terraria-scan-watcher.service
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import ipaddress
 import os
 import re
@@ -48,6 +50,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict, deque
+from contextlib import contextmanager
 from pathlib import Path
 
 # ---------------------------------------------------------------- 默认配置
@@ -64,6 +67,15 @@ GUARD_CHAIN = os.environ.get("GUARD_CHAIN", "DOCKER-USER")
 BAN_SET = os.environ.get("BAN_SET", "tg_ban")
 ALLOW_SET = os.environ.get("ALLOW_SET", "tg_allow")
 PORT = int(os.environ.get("TERRARIA_PORT", "7777"))
+
+# 控制台协议：必须与 api/app/services/console/channel.py 保持一致
+#   · control/console.lock 上的 flock 让 API 与本进程的命令互斥
+#   · 哨兵命令是「不带参数的 kick」：无副作用，回显固定为 "Usage: kick <player>"，
+#     用来划定本次回显的结束边界
+CONSOLE_SENTINEL = os.environ.get("TERRARIA_CONSOLE_SENTINEL", "kick")
+CONSOLE_FENCE = b"Usage: kick <player>"
+CONSOLE_LOCK_FILE = CONTROL_DIR / "console.lock"
+CONSOLE_LOCK_TIMEOUT = float(os.environ.get("TERRARIA_CONSOLE_LOCK_TIMEOUT", "5"))
 
 # 判定参数
 STRIKES = int(os.environ.get("STRIKES", "5"))            # 窗口内达到几次可疑连接就封
@@ -218,12 +230,21 @@ class Firewall:
 
 # ---------------------------------------------------------------- 控制台交互
 class Console:
-    def __init__(self, fifo: Path, log: Path, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        fifo: Path,
+        log: Path,
+        dry_run: bool = False,
+        lock_path: Path = CONSOLE_LOCK_FILE,
+    ) -> None:
         self.fifo = fifo
         self.log = log
         self.dry_run = dry_run
+        self.lock_path = lock_path
 
     def send(self, command: str) -> bool:
+        """单向命令：只写不读（save / exit / say 等）。也会拿锁，避免插到 API 的
+        「命令 + 哨兵」中间去污染它的回显。"""
         if self.dry_run:
             print(f"[dry-run] fifo <- {command!r}")
             return True
@@ -233,31 +254,92 @@ class Console:
             print(f"[warn] 无法写入控制 FIFO（服务端在运行吗？）: {exc}", file=sys.stderr)
             return False
         try:
-            os.write(fd, (command + "\n").encode())
+            with self._exclusive():
+                os.write(fd, (command + "\n").encode())
+        except TimeoutError as exc:
+            print(f"[warn] {exc}", file=sys.stderr)
+            return False
         finally:
             os.close(fd)
         return True
 
     def query(self, command: str, timeout: float = QUERY_TIMEOUT) -> str:
+        """需要回显的命令：命令 + 哨兵，读到哨兵那一行就是本次回显的结束边界。
+
+        协议与 api/app/services/console/channel.py 完全一致，两边共用
+        control/console.lock，所以面板轮询和守卫查询不会互相读串。
+        """
         try:
             size = self.log.stat().st_size
         except OSError:
             size = 0
-        if not self.send(command):
-            return ""
         if self.dry_run:
+            print(f"[dry-run] fifo <- {command!r} (+sentinel)")
             return ""
+        try:
+            fd = os.open(self.fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as exc:
+            print(f"[warn] 无法写入控制 FIFO: {exc}", file=sys.stderr)
+            return ""
+        try:
+            with self._exclusive():
+                os.write(fd, (command + "\n" + CONSOLE_SENTINEL + "\n").encode())
+                return self._read_until_fence(size, timeout)
+        except TimeoutError as exc:
+            print(f"[warn] {exc}", file=sys.stderr)
+            return ""
+        finally:
+            os.close(fd)
+
+    @contextmanager
+    def _exclusive(self):
+        """与 API 进程共享的 flock（基于 control/console.lock）。"""
+        fd = os.open(self.lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        acquired = False
+        try:
+            deadline = now() + CONSOLE_LOCK_TIMEOUT
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except OSError as exc:
+                    if exc.errno not in (errno.EACCES, errno.EAGAIN):
+                        raise
+                    if now() >= deadline:
+                        raise TimeoutError("等待控制台锁超时（API 正在用？）") from exc
+                    time.sleep(0.05)
+            yield
+        finally:
+            if acquired:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:  # pragma: no cover
+                    pass
+            os.close(fd)
+
+    def _read_until_fence(self, start: int, timeout: float) -> str:
         deadline = now() + timeout
-        while now() < deadline:
+        data = b""
+        while True:
             try:
-                if self.log.stat().st_size > size:
-                    with self.log.open("r", encoding="utf-8", errors="replace") as fh:
-                        fh.seek(size)
-                        return fh.read()
+                size = self.log.stat().st_size
             except OSError:
-                pass
-            time.sleep(0.1)
-        return ""
+                size = start
+            if size > start:
+                try:
+                    with self.log.open("rb") as fh:
+                        fh.seek(start)
+                        data = fh.read()
+                except OSError:
+                    data = b""
+            index = data.rfind(CONSOLE_FENCE)
+            if index != -1:
+                line_start = data.rfind(b"\n", 0, index) + 1
+                return data[:line_start].decode("utf-8", errors="replace")
+            if now() >= deadline:
+                return data.decode("utf-8", errors="replace")
+            time.sleep(0.05)
 
     def online_players(self) -> int:
         text = self.query("playing")
@@ -265,7 +347,10 @@ class Console:
             return -1  # 未知
         if "No players connected." in text:
             return 0
-        return sum(1 for line in text.splitlines() if RE_PLAYER_LINE.match(line))
+        count = sum(1 for line in text.splitlines() if RE_PLAYER_LINE.match(line))
+        # 认不出玩家列表时返回「未知」而不是 0——自动恢复依赖这个判断，
+        # 绝不能把「读到的内容不完整」误判成「没人在线」。
+        return count if count else -1
 
     def players_with_ip(self) -> dict[str, str]:
         """执行 playing，返回 {玩家名: IP}（playing 的输出才是“名字 ↔ IP”的权威来源）。"""

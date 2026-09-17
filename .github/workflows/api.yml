@@ -1,0 +1,39 @@
+name: api
+
+on:
+  push:
+    paths:
+      - "api/**"
+      - "guard/**"
+      - "docs/api/**"
+      - ".github/workflows/api.yml"
+  pull_request:
+    paths:
+      - "api/**"
+      - "guard/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: python -m pytest -q
+
+      # 契约闸门：接口改了但 api/openapi.json 快照没更新 → 直接失败，
+      # 避免「代码变了文档没变」。确认改动是有意的就本地跑
+      #   python scripts/export_openapi.py
+      # 并在 docs/api/CHANGELOG.md 里记一笔。
+      - name: Check OpenAPI snapshot
+        run: python scripts/export_openapi.py --check

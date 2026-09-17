@@ -468,9 +468,39 @@ Expected response:
 }
 ```
 
+### API contract & versioning
+
+The API follows a contract-first workflow so the frontend always knows what changed:
+
+| Artifact | Purpose |
+| --- | --- |
+| `api/openapi.json` | Machine-readable contract snapshot, committed and checked in CI. Generate frontend types from it (`openapi-typescript`). |
+| `docs/api/CHANGELOG.md` | Human-readable change log with migration examples and Sunset dates. |
+| `GET /api/meta` | Runtime handshake: `api_version`, `min_client_version`, `server_version`, `capabilities`, `deprecations`. The panel calls it on load and can tell the user to refresh when versions mismatch. |
+| `/docs`, `/openapi.json` | FastAPI's built-in interactive docs and live schema. |
+
+Contract changes are additive first: old routes keep working while new ones are added,
+deprecated routes advertise `Deprecation`/`Sunset` headers, and removal only happens in a
+major version. To regenerate the snapshot:
+
+```bash
+cd api
+python scripts/export_openapi.py          # update api/openapi.json
+python scripts/export_openapi.py --check  # CI: fail if the snapshot is stale
+```
+
+Refactor roadmap and design notes: `docs/api-refactor-plan.md`.
+
 ---
 
 # 15. Important API Endpoints
+
+## System
+
+```text
+GET  /api/health
+GET  /api/meta          # API version handshake for the frontend
+```
 
 ## Server
 

@@ -24,6 +24,7 @@ docker-compose.yml.bak
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
 
 # Environment / secrets
 .env

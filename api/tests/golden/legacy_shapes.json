@@ -1,0 +1,197 @@
+{
+  "GET /api/health": {
+    "shape": {
+      "service": "str",
+      "status": "str"
+    },
+    "status": 200
+  },
+  "GET /api/server/console": {
+    "shape": {
+      "lines": [
+        "str",
+        "str"
+      ]
+    },
+    "status": 200
+  },
+  "GET /api/server/players": {
+    "shape": {
+      "online": "int",
+      "players": [
+        "<empty>"
+      ]
+    },
+    "status": 200
+  },
+  "GET /api/server/status": {
+    "shape": {
+      "max_players": "int",
+      "motd": "str",
+      "players": {
+        "list": [
+          "<empty>"
+        ],
+        "online": "int"
+      },
+      "port": "int",
+      "running": "bool",
+      "seed": "str",
+      "time": "str",
+      "version": "str"
+    },
+    "status": 200
+  },
+  "GET /api/world/list": {
+    "shape": {
+      "active_world": "str",
+      "worlds": [
+        {
+          "active": "bool",
+          "file": "str",
+          "modified_at": "float",
+          "name": "str",
+          "size": "int"
+        },
+        {
+          "active": "bool",
+          "file": "str",
+          "modified_at": "float",
+          "name": "str",
+          "size": "int"
+        }
+      ]
+    },
+    "status": 200
+  },
+  "POST /api/server/ban": {
+    "shape": {
+      "player": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/command": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/kick": {
+    "shape": {
+      "player": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/maxplayers": {
+    "shape": {
+      "max_players": "int",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/motd": {
+    "shape": {
+      "motd": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/password": {
+    "shape": {
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/playing": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/port": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/save": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/say": {
+    "shape": {
+      "message": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/settle": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/time/dawn": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/time/dusk": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/time/midnight": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/time/noon": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/server/version": {
+    "shape": {
+      "command": "str",
+      "success": "bool"
+    },
+    "status": 200
+  },
+  "POST /api/world/switch": {
+    "note": "not called live (restarts server)",
+    "shape": {
+      "message": "str",
+      "success": "bool",
+      "world": "str"
+    },
+    "status": 200
+  },
+  "POST /api/world/upload": {
+    "note": "not called live (writes worlds/)",
+    "shape": {
+      "file": "str",
+      "name": "str",
+      "size": "int",
+      "success": "bool"
+    },
+    "status": 200
+  }
+}

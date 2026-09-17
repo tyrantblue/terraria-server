@@ -472,9 +472,38 @@ curl https://terraria-api.tyrantblue.xyz/api/health
 }
 ```
 
+### 接口契约与版本
+
+后端采用「契约先行」的流程，让前端始终知道接口变成了什么样：
+
+| 产物 | 作用 |
+| --- | --- |
+| `api/openapi.json` | 机器可读的契约快照，提交进仓库并由 CI 校验；前端据此用 `openapi-typescript` 生成 TS 类型 |
+| `docs/api/CHANGELOG.md` | 人读的变更说明，带迁移示例与 Sunset 日期 |
+| `GET /api/meta` | 运行时握手：`api_version`、`min_client_version`、`server_version`、`capabilities`、`deprecations`。面板启动时调用一次，版本不匹配就提示用户刷新面板 |
+| `/docs`、`/openapi.json` | FastAPI 自带的交互式文档与实时 schema |
+
+变更原则：**先加不删** —— 旧路由继续可用，新增路由并存；被弃用的路由返回
+`Deprecation`/`Sunset` 响应头；删除只在大版本做。更新快照：
+
+```bash
+cd api
+python scripts/export_openapi.py          # 更新 api/openapi.json
+python scripts/export_openapi.py --check  # CI 用：快照过期就失败
+```
+
+重构方案与设计说明见 `docs/api-refactor-plan.md`。
+
 ---
 
 # 15. 主要 API
+
+## 系统
+
+```text
+GET  /api/health
+GET  /api/meta          # 给前端做 API 版本握手
+```
 
 ## 服务器
 
