@@ -108,16 +108,33 @@ def split_line(text: str) -> tuple[float | None, str]:
     return stamp, rest
 
 
+def normalize_player_line(line: str) -> str:
+    """剥掉行首的 [时间戳] 与控制台提示符，得到真正的"内容"。
+
+    服务端会把它自己的提示符 `:` 跟输出写在一起，形如：
+
+        [2026-09-17 19:12:35] : C (113.194.127.204:12811)
+
+    提示符出现在**哪一行取决于上一条命令的输出是否以换行结束**——也就是说它可能
+    粘在玩家名那一行上。不剥掉的话面板就会显示成 ": C"。
+    （守卫进程的正则一直允许可选的提示符前缀，所以它拿到的名字本来就是干净的；这里补齐。）
+    """
+    _stamp, rest = split_timestamp(line)
+    rest = rest.strip()
+    if rest.startswith(":"):
+        rest = rest[1:].strip()
+    return rest
+
+
 def parse_players(text: str) -> list[str]:
     """解析 `playing` 的回显，返回玩家名列表。
 
-    与旧实现保持完全一致（逐行 strip、跳过空行与 "No players connected."、
-    只认形如 `名字 (ip:port)` 的行），只是多容忍一个行首时间戳。
+    逐行剥离时间戳与提示符、跳过空行与 "No players connected."，
+    只认形如 `名字 (ip:port)` 的行。
     """
     players: list[str] = []
     for line in text.splitlines():
-        _stamp, line = split_timestamp(line)
-        line = line.strip()
+        line = normalize_player_line(line)
         if not line:
             continue
         if NO_PLAYERS in line:
@@ -147,8 +164,7 @@ def parse_player_entries(text: str) -> list[PlayerEntry]:
     """比 parse_players 多解析出 IP 与端口（v1 的 /players 需要）。"""
     entries: list[PlayerEntry] = []
     for line in text.splitlines():
-        _stamp, line = split_timestamp(line)
-        line = line.strip()
+        line = normalize_player_line(line)
         if not line:
             continue
         match = RE_PLAYER_ENTRY.match(line)

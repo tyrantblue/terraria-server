@@ -100,8 +100,9 @@ class FakeTerraria(threading.Thread):
         if command in SILENT_EXACT or command.startswith(SILENT_PREFIXES):
             return
         if command == "playing" and self.players:
+            # 真实服务端会把提示符 ": " 写在第一行输出前面（且计数行在列表之后）
             listing = "\n".join(self.players)
-            self._append(f"{len(self.players)} players connected.\n{listing}\n: ")
+            self._append(f": {listing}\n{len(self.players)} players connected.\n: ")
             return
         text = self.responses.get(command, "Invalid command.")
         self._append(f"{text}\n: ")

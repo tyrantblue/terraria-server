@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from app.services.console import parser
 
-PLAYING_WITH_PLAYERS = """2 players connected.
-ユノの犬 (45.195.19.200:26557)
+#: 真实回显：控制台提示符 ": " 会粘在**第一行输出**上（哪一行取决于上一条命令
+#: 是否以换行结束），所以名字前面可能是 ": "
+PLAYING_WITH_PLAYERS = """: ユノの犬 (45.195.19.200:26557)
 CTQ (121.33.239.89:44176)
+2 players connected.
 : """
 
 PLAYING_EMPTY = "No players connected.\n: "
@@ -17,7 +19,22 @@ def test_parse_players_empty() -> None:
 
 
 def test_parse_players_two() -> None:
+    # 玩家名不能带上服务端的提示符
     assert parser.parse_players(PLAYING_WITH_PLAYERS) == ["ユノの犬", "CTQ"]
+
+
+def test_parse_players_strips_console_prompt() -> None:
+    """线上真实回显：行首 ": " 是提示符，不是名字的一部分。"""
+    real = "[2026-09-17 19:12:35] : C (113.194.127.204:12811)\n[2026-09-17 19:12:35] 1 player connected."
+    assert parser.parse_players(real) == ["C"]
+    entries = parser.parse_player_entries(real)
+    assert [(e.name, e.ip, e.port) for e in entries] == [("C", "113.194.127.204", 12811)]
+
+
+def test_normalize_player_line() -> None:
+    assert parser.normalize_player_line(": CTQ (1.2.3.4:5)") == "CTQ (1.2.3.4:5)"
+    assert parser.normalize_player_line("[2026-01-01 00:00:00] : CTQ (1.2.3.4:5)") == "CTQ (1.2.3.4:5)"
+    assert parser.normalize_player_line("CTQ (1.2.3.4:5)") == "CTQ (1.2.3.4:5)"
 
 
 def test_parse_players_ignores_unrelated_lines() -> None:

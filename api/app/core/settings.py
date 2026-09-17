@@ -38,7 +38,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.4.0")
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.4.1")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
