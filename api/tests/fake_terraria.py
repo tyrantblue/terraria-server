@@ -57,6 +57,8 @@ class FakeTerraria(threading.Thread):
         if responses:
             self.responses.update(responses)
         self.players = players
+        #: 收到过的命令（测试用来断言"有没有真的重启"之类）
+        self.commands: list[str] = []
         self._stop = threading.Event()
         if startup_lines:
             self._append("Error Logging Enabled.")
@@ -92,6 +94,7 @@ class FakeTerraria(threading.Thread):
 
     # -- 行为 ---------------------------------------------------------
     def _handle(self, command: str) -> None:
+        self.commands.append(command)
         # 注意：哨兵（裸 kick）走 responses 表，回显是 "Usage: kick <player>"；
         # 带参数的 kick（真正踢人）走下面的 SILENT 分支，不产生需要读取的回显。
         if command in SILENT_EXACT or command.startswith(SILENT_PREFIXES):

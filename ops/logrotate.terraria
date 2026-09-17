@@ -1,0 +1,12 @@
+# output.log 由容器里的 `tee -a` 持续追加，所以必须用 copytruncate：
+# 截断原文件而不是改名重建，tee 的 fd 才继续有效（O_APPEND 会写到新末尾）。
+# API 与守卫都按字节偏移读日志，截断后偏移变小 → 两边都会自动重置游标。
+/opt/terraria/control/output.log {
+    weekly
+    rotate 4
+    size 20M
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

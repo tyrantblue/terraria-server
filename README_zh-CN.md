@@ -1014,3 +1014,71 @@ sudo /opt/terraria/guard/terraria-guard.sh remove     # 双保险
 游戏容器本身没有被改造，回滚后行为与之前完全一致。
 `guard/systemd/` 里的单元仍可作为替代方案使用，但要在 `terraria-guard` 服务停止时才启用
 （两套不能同时跑）。
+---
+
+# 29. 定时任务、备份与通知
+
+下面这些都在 `docker-compose.yml`（`terraria-api` 服务）里配置，通过 `/api/v1` 暴露。
+
+## 29.1 定时任务
+
+| 环境变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `SCHEDULE_ENABLED` | `1` | 总开关 |
+| `SCHEDULE_SAVE_MINUTES` | `15` | 保存间隔（`0` = 关闭） |
+| `SCHEDULE_SAVE_SKIP_EMPTY` | `1` | 没人在线就不保存 |
+| `SCHEDULE_BACKUP_HOURS` | `6` | 自动备份间隔（`0` = 关闭） |
+| `SCHEDULE_BACKUP_KEEP` | `10` | 只保留最近 N 份（`pre-restore-*` 永不清理） |
+| `SCHEDULE_RESTART_AT` | `05:00` | 每天重启时间，留空则关闭 |
+| `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | 有人在线就跳过重启 |
+| `SCHEDULE_RESTART_WARN_MINUTES` | `5` | 重启前广播提醒 |
+| `SCHEDULE_TZ` | `Asia/Shanghai` | 定时重启用哪个时区（容器默认 UTC） |
+
+```bash
+curl localhost:8080/api/v1/scheduler                    # 任务、下次执行时间、上次结果
+curl -X POST localhost:8080/api/v1/scheduler/save/run   # 立即执行一次
+```
+
+## 29.2 备份与恢复
+
+自动备份在 `backup/<YYYYmmdd-HHMMSS>/`（世界文件 + `serverconfig.txt`）。
+Terraria 自己写的 `.wld.bak`/`.bak2` 也会出现在列表里（`kind: "auto"`），同样可以恢复。
+
+```bash
+curl localhost:8080/api/v1/backups
+curl -X POST localhost:8080/api/v1/backups/20260917-170849/restore      # 202 + operation_id
+curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # 用游戏自己的备份恢复
+```
+
+恢复**当前激活的世界**会重启两次（停服 → 替换文件 → 用 `exit-nosave` 再启动，
+否则退出时的自动保存会把刚恢复的文件覆盖回去），并在
+`backup/pre-restore-<时间戳>/` 留一份覆盖前的安全副本。恢复其他世界只复制文件、不重启。
+
+## 29.3 事件通知
+
+| 环境变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `NOTIFY_WEBHOOK_URL` | 空 | 留空即关闭 |
+| `NOTIFY_FORMAT` | `auto` | `auto`（按 URL 猜）/ `discord` / `slack` / `json` |
+| `NOTIFY_EVENTS` | 空 | 逗号分隔的白名单，空 = 全部 |
+
+事件：`player_join`、`player_leave`、`player_booted`、`server_up`、`server_error`、
+`backup_done`、`schedule_failed`、`restart_skipped`。
+
+```bash
+curl localhost:8080/api/v1/notifications
+curl -X POST localhost:8080/api/v1/notifications/test
+```
+
+## 29.4 日志时间戳与轮转
+
+`start.sh` 会给控制台每一行加上 `[YYYY-mm-dd HH:MM:SS]` 前缀（时区取容器的 `TZ`，
+镜像里已装 `tzdata`）。`/api/v1/console` 把它解析成 `ts` 字段。
+`ops/logrotate.terraria`（装到 `/etc/logrotate.d/terraria`）在 20M 时轮转 `control/output.log`，
+保留 4 份，用 `copytruncate`（容器里的 `tee` 不受影响）：
+
+```bash
+sudo install -m 644 ops/logrotate.terraria /etc/logrotate.d/terraria
+```
+
+API 与守卫都能解析**有/无**时间戳两种格式，所以把 `start.sh` 里的 `awk` 去掉是安全的回滚方式。

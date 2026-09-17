@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.deps import runtime
 from app.core.settings import Settings
 from app.main import create_app
 from app.services.runtime import Runtime, build_runtime
@@ -66,6 +65,8 @@ def settings(tmp_path: Path, fake_terraria: FakeTerraria) -> Settings:
         static_ttl=0.0,
         console_timeout=3.0,
         console_lock_timeout=3.0,
+        # 测试里不启动后台调度线程（要测就显式 run_now）
+        schedule_enabled=False,
     )
 
 
@@ -76,8 +77,6 @@ def rt(settings: Settings) -> Runtime:
 
 @pytest.fixture
 def client(rt: Runtime) -> TestClient:
-    app = create_app()
-    app.dependency_overrides[runtime] = lambda: rt
-    with TestClient(app) as test_client:
+    # create_app(rt)：依赖注入与生命周期用同一个 runtime，不会碰到真实目录
+    with TestClient(create_app(rt)) as test_client:
         yield test_client
-    app.dependency_overrides.clear()

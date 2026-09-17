@@ -131,6 +131,39 @@ class ServerService:
         """保存并让容器重启服务端；返回后台操作。"""
         return self._operations.submit("server.restart", self._restart_job)
 
+    # -- 定时任务用的入口 ------------------------------------------------
+    def scheduled_save(self, skip_if_empty: bool) -> str:
+        """定时保存。默认没人在线就跳过——省掉一次 12MB 的无意义落盘。"""
+        if skip_if_empty:
+            try:
+                online = len(self._status.player_entries())
+            except Exception:  # noqa: BLE001 - 控制台暂时不可用时不要假装成功
+                return "skipped: 控制台不可用"
+            if online == 0:
+                return "skipped: 无人在线"
+        self._channel.send("save")
+        return "saved"
+
+    def scheduled_restart(self, *, skip_if_players: bool, warn_minutes: int) -> str:
+        """定时重启。默认有人在线就跳过，避免把正在玩的人踢下线。"""
+        online = 0
+        try:
+            online = len(self._status.player_entries())
+        except Exception:  # noqa: BLE001
+            online = 0
+        if skip_if_players and online > 0:
+            if warn_minutes > 0:
+                self._channel.send(
+                    f"say [server] scheduled restart skipped: {online} player(s) online"
+                )
+            return f"skipped: {online} 人在线"
+        if warn_minutes > 0:
+            self._channel.send(
+                f"say [server] scheduled restart: saving world now, back in ~1 minute"
+            )
+        operation = self.restart()
+        return f"submitted: {operation.id}"
+
     def _restart_job(self, progress) -> dict[str, object]:
         progress(5, "正在保存世界")
         self._channel.send("save")

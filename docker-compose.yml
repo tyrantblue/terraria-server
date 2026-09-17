@@ -19,6 +19,10 @@ services:
     entrypoint:
       - /start.sh
 
+    environment:
+      # 日志时间戳与游戏自身报错的时区（容器默认 UTC，显式指定避免"凌晨 5 点"变中午）
+      TZ: "${TZ:-Asia/Shanghai}"
+
     stdin_open: true
     tty: true
 
@@ -39,6 +43,25 @@ services:
       # 备份必须落在宿主机上（API 的 /api/v1/worlds/{file}/backup 会写这里）。
       # 少挂这一条时备份会写进容器可写层，容器一重建就没了。
       - ./backup:/opt/terraria/backup
+
+    environment:
+      # 日志时间戳/备份目录名/定时任务都用这个时区（容器默认 UTC）
+      TZ: "${TZ:-Asia/Shanghai}"
+      TERRARIA_LOG_TZ: "${TZ:-Asia/Shanghai}"
+      # ---- 定时任务（见 docs/roadmap.md；实现于 app/services/scheduler.py）----
+      SCHEDULE_ENABLED: "1"
+      SCHEDULE_TZ: "${TZ:-Asia/Shanghai}"
+      SCHEDULE_SAVE_MINUTES: "15"        # 每 15 分钟保存（没人在线自动跳过）
+      SCHEDULE_SAVE_SKIP_EMPTY: "1"
+      SCHEDULE_BACKUP_HOURS: "6"         # 每 6 小时自动备份
+      SCHEDULE_BACKUP_KEEP: "10"         # 只保留最近 10 份（pre-restore 安全副本不清理）
+      SCHEDULE_RESTART_AT: "05:00"       # 每天 05:00（SCHEDULE_TZ）重启；留空 = 关闭
+      SCHEDULE_RESTART_SKIP_IF_PLAYERS: "1"
+      SCHEDULE_RESTART_WARN_MINUTES: "5"
+      # ---- 事件通知（webhook）；留空即关闭 ----
+      NOTIFY_WEBHOOK_URL: ""
+      NOTIFY_FORMAT: "auto"              # auto | discord | slack | json
+      NOTIFY_EVENTS: ""                  # 逗号分隔；空 = 全部
 
   # ---------------------------------------------------------------------------
   # 连接守卫：把扫描/探测连接挡在 7777 之外，并在“假满员”时自动恢复。

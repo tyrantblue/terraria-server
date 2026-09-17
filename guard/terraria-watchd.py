@@ -101,15 +101,20 @@ RECOVER_SAVE_WAIT = float(os.environ.get("RECOVER_SAVE_WAIT", "25"))  # save 后
 QUERY_TIMEOUT = float(os.environ.get("QUERY_TIMEOUT", "5"))         # 读命令回显超时
 
 # ---------------------------------------------------------------- 日志解析
+#: start.sh 会给每行加 "[YYYY-mm-dd HH:MM:SS] "（见 terraria/start.sh）。
+#: 这里把「时间戳 + 提示符」都做成可选前缀，新旧日志格式都能解析——
+#: 否则改日志格式的那次发布会让封禁/学习功能静默失效。
+LINE_PREFIX = r"^(?:\[\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}\]\s*)?(?::\s*)?"
+
 IP = r"(?P<ip>\d{1,3}(?:\.\d{1,3}){3})"
-RE_CONNECT = re.compile(rf"^(?::\s*)?{IP}:(?P<port>\d+) is connecting\.\.\.\s*$")
-RE_LOST = re.compile(rf"^(?::\s*)?{IP}:(?P<port>\d+) lost connection\.\.\.\s*$")
-RE_BOOTED = re.compile(rf"^(?::\s*)?{IP}:(?P<port>\d+) was booted:\s*(?P<reason>.*?)\s*$")
-RE_JOINED = re.compile(r"^(?::\s*)?(?P<name>.+?) has joined\.\s*$")
+RE_CONNECT = re.compile(rf"{LINE_PREFIX}{IP}:(?P<port>\d+) is connecting\.\.\.\s*$")
+RE_LOST = re.compile(rf"{LINE_PREFIX}{IP}:(?P<port>\d+) lost connection\.\.\.\s*$")
+RE_BOOTED = re.compile(rf"{LINE_PREFIX}{IP}:(?P<port>\d+) was booted:\s*(?P<reason>.*?)\s*$")
+RE_JOINED = re.compile(rf"{LINE_PREFIX}(?P<name>.+?) has joined\.\s*$")
 RE_LISTENING = re.compile(r"Listening on port \d+")
 # playing 输出里的玩家行：  用户名 (1.2.3.4:56789)
 RE_PLAYER_LINE = re.compile(
-    rf"^:?\s*(?P<name>.+?) \((?P<ip>\d{{1,3}}(?:\.\d{{1,3}}){{3}}):\d+\)\s*$"
+    rf"{LINE_PREFIX}(?P<name>.+?) \((?P<ip>\d{{1,3}}(?:\.\d{{1,3}}){{3}}):\d+\)\s*$"
 )
 
 FULL_REASON = "This server is full right now"

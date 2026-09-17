@@ -29,9 +29,20 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in ("0", "false", "no", "off", "")
+
+
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.2.0")
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.3.0")
+
+#: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
+#: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
+LOG_TIMEZONE = os.environ.get("TERRARIA_LOG_TZ", os.environ.get("TZ", "Asia/Shanghai"))
 
 #: 前端构建时对应的 API 版本；后端比它高太多时前端应提示用户刷新面板。
 MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.0.0")
@@ -62,6 +73,35 @@ class Settings:
     #: "Usage: kick <player>"，用它给「本次命令的回显」划一条确定性的结束边界。
     #: 注意：guard/terraria-watchd.py 必须使用同一个哨兵和同一个锁文件。
     console_sentinel: str = os.environ.get("TERRARIA_CONSOLE_SENTINEL", "kick")
+
+    # -- 定时任务（见 docs/roadmap.md，实现于 services/scheduler.py） --------
+    schedule_enabled: bool = _env_bool("SCHEDULE_ENABLED", True)
+    #: 每多少分钟保存一次（0 = 关闭）
+    schedule_save_minutes: int = _env_int("SCHEDULE_SAVE_MINUTES", 15)
+    #: 没人在线时是否跳过保存
+    schedule_save_skip_empty: bool = _env_bool("SCHEDULE_SAVE_SKIP_EMPTY", True)
+    #: 每多少小时自动备份一次（0 = 关闭）
+    schedule_backup_hours: float = _env_float("SCHEDULE_BACKUP_HOURS", 6)
+    #: 只保留最近 N 份自动/手动备份（0 = 不清理），pre-restore 安全副本不受影响
+    schedule_backup_keep: int = _env_int("SCHEDULE_BACKUP_KEEP", 10)
+    #: 每天几点定时重启（"05:00"；空 = 关闭）
+    schedule_restart_at: str = os.environ.get("SCHEDULE_RESTART_AT", "")
+    #: 有人在线时是否跳过定时重启
+    schedule_restart_skip_if_players: bool = _env_bool(
+        "SCHEDULE_RESTART_SKIP_IF_PLAYERS", True
+    )
+    #: 重启前几分钟广播提醒（0 = 不提醒）
+    schedule_restart_warn_minutes: int = _env_int("SCHEDULE_RESTART_WARN_MINUTES", 5)
+    #: 定时任务用的时区（容器默认 UTC，这里显式指定，避免"凌晨 5 点"变成中午）
+    schedule_timezone: str = os.environ.get("SCHEDULE_TZ", "Asia/Shanghai")
+
+    # -- 事件通知（webhook） ---------------------------------------------
+    #: 留空即关闭
+    notify_webhook_url: str = os.environ.get("NOTIFY_WEBHOOK_URL", "")
+    #: auto | discord | slack | json
+    notify_format: str = os.environ.get("NOTIFY_FORMAT", "auto")
+    #: 逗号分隔的事件白名单；空 = 全部
+    notify_events: str = os.environ.get("NOTIFY_EVENTS", "")
 
     #: /api/server/console 默认与最大返回行数
     console_tail_default: int = _env_int("TERRARIA_CONSOLE_TAIL", 50)

@@ -13,6 +13,7 @@ from app.schemas.v1 import (
     BackupListResponse,
     OkResponse,
     OperationRef,
+    RestoreRequest,
     UploadResponse,
     WorldListResponse,
 )
@@ -64,4 +65,20 @@ def backup_world(file: str, rt: RuntimeDep) -> dict[str, object]:
 
 @router.get("/backups", response_model=BackupListResponse)
 def list_backups(rt: RuntimeDep) -> dict[str, object]:
+    """手工备份目录 + Terraria 自己的 .wld.bak（kind=auto，名字形如 auto:gogogo.wld.bak）。"""
     return {"backups": rt.world.list_backups()}
+
+
+@router.post(
+    "/backups/{name}/restore",
+    response_model=OperationRef,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def restore_backup(name: str, rt: RuntimeDep, request: RestoreRequest | None = None) -> dict[str, object]:
+    """从备份恢复世界。
+
+    恢复「当前激活的世界」会重启两次（先停服、替换文件、再以 exit-nosave 启动），
+    并在 backup/pre-restore-<时间戳>/ 留一份覆盖前的安全副本。
+    """
+    operation = rt.world.restore(name, request.file if request else None)
+    return {"operation_id": operation.id, "state": operation.state, "kind": operation.kind}

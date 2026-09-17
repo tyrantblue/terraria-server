@@ -119,6 +119,8 @@ class ConsoleLine(BaseModel):
     offset: int
     kind: str
     text: str
+    #: 由 start.sh 打上的行首时间戳解析而来；旧日志没有则为 null
+    ts: float | None = None
 
 
 class ConsoleResponse(BaseModel):
@@ -174,6 +176,13 @@ class BackupEntry(BaseModel):
     created_at: float
     files: int
     size: int
+    kind: str = "manual"          # manual | auto（Terraria 自己写的 .wld.bak）| legacy
+    restorable: bool = True
+    path: str = ""
+
+
+class RestoreRequest(BaseModel):
+    file: str | None = None
 
 
 class BackupListResponse(BaseModel):
@@ -198,3 +207,53 @@ class UsageEntry(BaseModel):
 class UsageResponse(BaseModel):
     note: str
     usage: list[UsageEntry]
+
+
+# ---------------------------------------------------------------- scheduler
+class JobRun(BaseModel):
+    at: float
+    status: str            # succeeded | skipped | failed
+    detail: str | None = None
+    duration: float
+    manual: bool
+
+
+class SchedulerJob(BaseModel):
+    name: str
+    kind: str              # interval | daily
+    description: str
+    enabled: bool
+    interval_seconds: float | None = None
+    at: str | None = None
+    next_run: float | None = None
+    last_run: float | None = None
+    last_status: str | None = None
+    last_detail: str | None = None
+    run_count: int = 0
+    skipped_count: int = 0
+    failed_count: int = 0
+    history: list[JobRun] = Field(default_factory=list)
+
+
+class SchedulerResponse(BaseModel):
+    enabled: bool
+    timezone: str
+    jobs: list[SchedulerJob]
+
+
+# ---------------------------------------------------------------- notifications
+class DeliveryView(BaseModel):
+    ts: float
+    event: str
+    title: str
+    ok: bool
+    status: int | None = None
+    error: str | None = None
+
+
+class NotificationStatus(BaseModel):
+    enabled: bool
+    url: str
+    format: str
+    events: list[str] | str
+    deliveries: list[DeliveryView]

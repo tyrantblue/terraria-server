@@ -16,6 +16,66 @@
 
 ---
 
+## [1.3.0] — 2026-09-17
+
+按 `../roadmap.md` 的 P1 清单继续开发：**定时任务、备份恢复、事件通知、日志时间戳+轮转**。
+仍然是「只增不删」，旧接口照常可用。
+
+### Added
+
+* **定时任务**（配置见 `docker-compose.yml` 的 `SCHEDULE_*`）：
+  * `save` —— 每 15 分钟保存一次，**没人在线自动跳过**（省掉一次 12MB 无意义落盘）；
+  * `backup` —— 每 6 小时自动备份 + **按数量清理旧备份**（`pre-restore-*` 与迁移备份不清理）；
+  * `restart` —— 每天 `SCHEDULE_RESTART_AT`（默认 05:00，时区 `SCHEDULE_TZ`）重启，
+    **有人在线就跳过**并广播提示。
+  * `GET /api/v1/scheduler` 查看任务与下次执行时间；
+    `POST /api/v1/scheduler/{name}/run` 手动触发一次（返回本次结果）。
+* **备份恢复**：`POST /api/v1/backups/{name}/restore` → **202**。
+  * 恢复「当前激活的世界」会走两段式：保存 → 存安全副本 → `exit` → 覆盖文件 → `exit-nosave`
+    （第二次必须不保存，否则退出时的自动保存会把恢复的文件覆盖回去）；
+  * 恢复「非激活世界」只复制文件，不重启；
+  * 结果里带 `sha256` 与 `safety_copy`（`backup/pre-restore-<时间戳>/`）；
+  * `name` 支持 `auto:gogogo.wld.bak` 形式，可以直接用 Terraria 自己写的 `.wld.bak`/`.bak2`。
+  * `GET /api/v1/backups` 的条目新增 `kind`（manual/auto/legacy）、`restorable`、`path`。
+* **事件通知（webhook）**：`NOTIFY_WEBHOOK_URL` / `NOTIFY_FORMAT`（auto/discord/slack/json）/
+  `NOTIFY_EVENTS`。
+  * 事件：`player_join`、`player_leave`、`player_booted`、`server_up`、`server_error`、
+    `backup_done`、`schedule_failed`、`restart_skipped`；
+  * `GET /api/v1/notifications` 查看配置与最近投递结果（URL 做掩码，不回显完整 webhook）；
+  * `POST /api/v1/notifications/test` 立刻发一条测试消息。
+* **日志时间戳**：`start.sh` 现在给每行加 `[YYYY-mm-dd HH:MM:SS] ` 前缀（时区取 `TZ`）。
+  * `GET /api/v1/console` 与 `WS /api/v1/console/stream` 的每行新增 `ts`（epoch，可能为 null）；
+  * 加了 `/etc/logrotate.d/terraria`（`size 20M`、保留 4 份、`copytruncate`），
+    `output.log` 不再无限增长。
+* 游戏镜像补了 `tzdata`（否则容器里的 `TZ` 无效、时间戳全是 UTC）。
+
+### Changed
+
+* 备份目录名与 `pre-restore-*` 目录名改用容器时区（`TZ`，默认 Asia/Shanghai）。
+  此前 API 容器是 UTC，目录名会比本地时间早 8 小时。
+* API 容器也设置了 `TZ`，`ts` 字段按 `TERRARIA_LOG_TZ` 解析，不会整体偏移。
+
+### Fixed
+
+* **备份以前写在 API 容器的可写层**：`docker-compose.yml` 的 `terraria-api` 少了
+  `./backup` 挂载，容器一重建备份就没了。已挂载到宿主机 `backup/`。
+
+### 兼容性说明
+
+* 日志格式变化（新增 `[时间戳]` 前缀）对调用方**不可见**：
+  API 侧的解析器与守卫进程都同时兼容「有时间戳」和「没有时间戳」两种格式，
+  镜像回退到旧版本也能正常解析。恢复旧行为只需把 `start.sh` 里的 awk 去掉。
+* 新增接口均为附加；`GET /api/v1/backups` 只增加了字段。
+
+### Internal
+
+* 测试 84 → **133**；新增 `test_scheduler.py` / `test_restore.py` /
+  `test_notifications.py` / `test_guard_parsing.py`。
+* `test_guard_parsing.py` 专门盯住「日志格式变化导致守卫静默失效」这一类问题
+  （封禁、学习型白名单都依赖日志正则）。
+
+---
+
 ## [1.2.0] — 2026-09-17
 
 新增 `/api/v1` 接口面（资源导向 + 长任务 + 结构化控制台 + 配置持久化），

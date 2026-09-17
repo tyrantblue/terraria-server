@@ -8,6 +8,17 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from app.core.settings import LOG_TIMEZONE
+
+
+try:
+    _LOG_TZ = ZoneInfo(LOG_TIMEZONE)
+except (ZoneInfoNotFoundError, ValueError):  # pragma: no cover
+    _LOG_TZ = timezone.utc
+
 
 RE_VERSION = re.compile(r"Terraria Server v(.+)")
 RE_PORT = re.compile(r"Port:\s*(\d+)")
@@ -16,6 +27,12 @@ RE_TIME = re.compile(r"Time:\s*(.+)")
 RE_SEED = re.compile(r"World Seed:\s*(.+)")
 RE_MOTD = re.compile(r"MOTD:\s*(.*)")
 RE_PLAYER_LINE = re.compile(r"^(.+?) \(.+:\d+\)$")
+
+#: start.sh 会在每行前面加 "[YYYY-mm-dd HH:MM:SS] "（时区见 TERRARIA_LOG_TZ / TZ）。
+#: 下面两个正则同时兼容「有时间戳」和「没有时间戳」两种日志，方便灰度切换。
+TIMESTAMP = r"\[(?P<ts>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2})\]\s*"
+RE_LEADING_TIMESTAMP = re.compile(rf"^{TIMESTAMP}")
+RE_LINE_PREFIX = re.compile(rf"^(?:{TIMESTAMP})?(?::\s*)?")
 
 NO_PLAYERS = "No players connected."
 
@@ -62,14 +79,44 @@ def parse_motd(text: str) -> str | None:
     return match.group(1).strip() if match else None
 
 
+def split_timestamp(text: str) -> tuple[float | None, str]:
+    """剥掉行首的 [时间戳]，返回 (epoch | None, 剩余文本)。
+
+    ⚠️ 只剥时间戳、不剥提示符：这样旧格式下的解析结果与重构前**逐字节一致**
+    （以前 `: CTQ (ip:port)` 会解析成 ": CTQ"，现在仍然一样），
+    新格式只是把时间戳这一层去掉。
+    """
+    match = RE_LEADING_TIMESTAMP.match(text)
+    if not match:
+        return None, text
+    raw = match.group("ts").replace("T", " ")
+    try:
+        # 关键：日志里的墙钟时间属于 LOG_TIMEZONE，必须显式带上 tzinfo，
+        # 否则会按进程本地时区解释（API 容器是 UTC → ts 会差 8 小时）。
+        stamp = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S").replace(tzinfo=_LOG_TZ).timestamp()
+    except ValueError:
+        stamp = None
+    return stamp, text[match.end() :]
+
+
+def split_line(text: str) -> tuple[float | None, str]:
+    """剥掉时间戳与提示符，返回 (epoch | None, 正文)。供日志分类/事件识别使用。"""
+    stamp, rest = split_timestamp(text)
+    match = re.match(r"^:\s*", rest)
+    if match:
+        rest = rest[match.end() :]
+    return stamp, rest
+
+
 def parse_players(text: str) -> list[str]:
     """解析 `playing` 的回显，返回玩家名列表。
 
-    与旧实现保持完全一致：逐行 strip、跳过空行与 "No players connected."，
-    只认形如 `名字 (ip:port)` 的行。
+    与旧实现保持完全一致（逐行 strip、跳过空行与 "No players connected."、
+    只认形如 `名字 (ip:port)` 的行），只是多容忍一个行首时间戳。
     """
     players: list[str] = []
     for line in text.splitlines():
+        _stamp, line = split_timestamp(line)
         line = line.strip()
         if not line:
             continue
@@ -100,6 +147,7 @@ def parse_player_entries(text: str) -> list[PlayerEntry]:
     """比 parse_players 多解析出 IP 与端口（v1 的 /players 需要）。"""
     entries: list[PlayerEntry] = []
     for line in text.splitlines():
+        _stamp, line = split_timestamp(line)
         line = line.strip()
         if not line:
             continue
@@ -133,14 +181,10 @@ def classify_line(text: str) -> str:
 
     面板不必再自己写正则去猜「这行是什么」。
     """
-    stripped = text.strip()
-    if not stripped:
-        return "blank"
-    if stripped in (":", ": "):
+    _stamp, body = split_line(text)
+    body = body.strip()
+    if not body:
         return "prompt"
-
-    # 日志里经常出现 ": 内容" 这种提示符与内容粘连的形态
-    body = stripped[1:].strip() if stripped.startswith(":") else stripped
 
     if "has joined." in body:
         return "player_join"

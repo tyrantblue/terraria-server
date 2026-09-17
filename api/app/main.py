@@ -7,6 +7,7 @@ P0 重构后这里只负责：中间件、统一异常处理、路由注册。
 from __future__ import annotations
 
 import logging
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +22,7 @@ from app.core.deprecations import lookup as lookup_deprecation
 from app.core.errors import AppError
 from app.core.settings import API_VERSION
 from app.core.telemetry import telemetry
+from app.services.runtime import Runtime, get_runtime
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,8 +46,32 @@ _HTTP_ERROR_CODES = {
 }
 
 
-def create_app() -> FastAPI:
-    app = FastAPI(title="Terraria Server API", version=API_VERSION)
+def create_app(runtime: Runtime | None = None) -> FastAPI:
+    """构造应用。
+
+    传入 runtime 时（测试/嵌入使用），请求依赖与生命周期都用它，
+    避免「依赖注入用假环境、启动钩子却碰真目录」这种坑。
+    """
+
+    def resolve_runtime() -> Runtime:
+        return runtime if runtime is not None else get_runtime()
+
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        rt = resolve_runtime()
+        rt.notifier.start()
+        rt.events.start()
+        if rt.settings.schedule_enabled:
+            rt.scheduler.start()
+        try:
+            yield
+        finally:
+            rt.scheduler.stop()
+            rt.events.stop()
+            rt.notifier.stop()
+
+    app = FastAPI(title="Terraria Server API", version=API_VERSION, lifespan=lifespan)
+    app.state.runtime = runtime
 
     app.add_middleware(
         CORSMiddleware,
@@ -84,6 +110,11 @@ def create_app() -> FastAPI:
                 response.headers[key] = value
             telemetry.record(request.url.path, request.headers.get("X-Client-Version"))
         return response
+
+    if runtime is not None:
+        from app.api.deps import runtime as runtime_dep
+
+        app.dependency_overrides[runtime_dep] = resolve_runtime
 
     app.include_router(system_api.router)
     app.include_router(server_api.router)

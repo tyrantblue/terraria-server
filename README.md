@@ -1009,3 +1009,74 @@ sudo /opt/terraria/guard/terraria-guard.sh remove     # belt and braces
 The game container itself was not modified, so rollback restores the previous behaviour.
 The systemd units in `guard/systemd/` remain available as an alternative deployment; enable
 them only while the `terraria-guard` service is stopped (never run both at once).
+---
+
+# 29. Scheduled Tasks, Backups and Notifications
+
+Everything below is configured in `docker-compose.yml` (the `terraria-api` service) and
+surfaced under `/api/v1`.
+
+## 29.1 Scheduled tasks
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `SCHEDULE_ENABLED` | `1` | master switch |
+| `SCHEDULE_SAVE_MINUTES` | `15` | save interval (`0` = off) |
+| `SCHEDULE_SAVE_SKIP_EMPTY` | `1` | skip saving when nobody is online |
+| `SCHEDULE_BACKUP_HOURS` | `6` | automatic backup interval (`0` = off) |
+| `SCHEDULE_BACKUP_KEEP` | `10` | keep the newest N backups (`pre-restore-*` is never pruned) |
+| `SCHEDULE_RESTART_AT` | `05:00` | daily restart time, empty = off |
+| `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | skip the restart if players are online |
+| `SCHEDULE_RESTART_WARN_MINUTES` | `5` | broadcast a warning before restarting |
+| `SCHEDULE_TZ` | `Asia/Shanghai` | timezone for the daily restart (containers are UTC) |
+
+```bash
+curl localhost:8080/api/v1/scheduler                    # jobs, next run, last result
+curl -X POST localhost:8080/api/v1/scheduler/save/run   # run one now
+```
+
+## 29.2 Backups and restore
+
+Automatic backups land in `backup/<YYYYmmdd-HHMMSS>/` (world files + `serverconfig.txt`).
+Terraria's own `.wld.bak`/`.bak2` show up as `kind: "auto"` and are restorable too.
+
+```bash
+curl localhost:8080/api/v1/backups
+curl -X POST localhost:8080/api/v1/backups/20260917-170849/restore      # 202 + operation_id
+curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # Terraria's own backup
+```
+
+Restoring the **active** world restarts the server twice (stop, replace the file, start again
+with `exit-nosave` so the shutdown save cannot overwrite the restored file) and keeps a safety
+copy in `backup/pre-restore-<timestamp>/`. Restoring an inactive world just copies the file.
+
+## 29.3 Notifications
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `NOTIFY_WEBHOOK_URL` | empty | empty disables notifications |
+| `NOTIFY_FORMAT` | `auto` | `auto` (guess from URL) / `discord` / `slack` / `json` |
+| `NOTIFY_EVENTS` | empty | comma separated allow-list, empty = all |
+
+Events: `player_join`, `player_leave`, `player_booted`, `server_up`, `server_error`,
+`backup_done`, `schedule_failed`, `restart_skipped`.
+
+```bash
+curl localhost:8080/api/v1/notifications
+curl -X POST localhost:8080/api/v1/notifications/test
+```
+
+## 29.4 Log timestamps and rotation
+
+`start.sh` prefixes every console line with `[YYYY-mm-dd HH:MM:SS]` using the container's `TZ`
+(the image ships `tzdata`). `/api/v1/console` returns that as the `ts` field.
+`ops/logrotate.terraria` (installed to `/etc/logrotate.d/terraria`) rotates
+`control/output.log` at 20M, keeps 4 files and uses `copytruncate` (so the container's
+`tee` keeps working):
+
+```bash
+sudo install -m 644 ops/logrotate.terraria /etc/logrotate.d/terraria
+```
+
+The API and the guard both accept log lines **with or without** the timestamp prefix, so
+removing the `awk` stage from `start.sh` is a safe rollback.

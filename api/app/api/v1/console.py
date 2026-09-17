@@ -20,7 +20,7 @@ from app.schemas.v1 import (
     ConsoleResponse,
 )
 from app.services.console.audit import guard_command
-from app.services.console.parser import classify_line, is_fence_line
+from app.services.console.parser import classify_line, is_fence_line, split_line
 from app.services.runtime import Runtime
 
 router = APIRouter(prefix="/api/v1", tags=["v1:console"])
@@ -30,7 +30,8 @@ INITIAL_LINES = 100
 
 
 def _view(offset: int, text: str) -> dict[str, object]:
-    return {"offset": offset, "kind": classify_line(text), "text": text}
+    stamp, _body = split_line(text)
+    return {"offset": offset, "ts": stamp, "kind": classify_line(text), "text": text}
 
 
 @router.get("/console", response_model=ConsoleResponse)
@@ -87,7 +88,8 @@ async def stream(websocket: WebSocket, rt: Runtime = Depends(runtime)) -> None:
         for text in reader.tail(INITIAL_LINES):
             if not is_fence_line(text):
                 await websocket.send_json(
-                    {"type": "console.line", "offset": -1, "kind": classify_line(text), "text": text}
+                    {"type": "console.line", "offset": -1, "ts": split_line(text)[0],
+                     "kind": classify_line(text), "text": text}
                 )
         cursor = reader.size()
         await websocket.send_json({"type": "hello", "cursor": cursor})
@@ -100,7 +102,8 @@ async def stream(websocket: WebSocket, rt: Runtime = Depends(runtime)) -> None:
                 if is_fence_line(text):
                     continue
                 await websocket.send_json(
-                    {"type": "console.line", "offset": offset, "kind": classify_line(text), "text": text}
+                    {"type": "console.line", "offset": offset, "ts": split_line(text)[0],
+                     "kind": classify_line(text), "text": text}
                 )
             await asyncio.sleep(POLL_INTERVAL)
     except WebSocketDisconnect:

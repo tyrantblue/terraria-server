@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import AsyncIterator, Protocol
 
+import hashlib
+import re
 import shutil
 from datetime import datetime
 
@@ -21,6 +23,8 @@ from app.services.operations import FAILED, SUCCEEDED, Operation, OperationRegis
 from app.services.status import StatusCollector
 
 SWITCH_TIMEOUT = 30.0
+#: 自动备份目录名（20260917-080632）才会被保留策略清理
+BACKUP_NAME_RE = re.compile(r"^\d{8}-\d{6}$")
 SAVE_GRACE = 1.0
 CHUNK_SIZE = 1024 * 1024
 
@@ -140,21 +144,8 @@ class WorldService:
             raise UpstreamFailed(f"failed to stop server: {exc}") from exc
 
         # 4. 等待服务端重新可用
-        deadline = time.monotonic() + SWITCH_TIMEOUT
-        step = 0
-        while time.monotonic() < deadline:
-            try:
-                if "Terraria Server" in self._channel.run("version", timeout=2.0):
-                    self._status.invalidate()
-                    progress(95, "服务端已恢复")
-                    return {"world": filename}
-            except Exception:  # noqa: BLE001 - 重启期间 FIFO 会短暂不可用
-                pass
-            step += 1
-            progress(min(90, 40 + step * 5), "等待服务端重新监听")
-            time.sleep(1)
-
-        raise UpstreamFailed("Terraria server did not restart within 30 seconds", status_code=504)
+        self._wait_until_up(progress, base=40, span=50)
+        return {"world": filename}
 
     def activate_and_wait(self, requested: str, timeout: float = 90.0) -> str:
         """旧接口 POST /api/world/switch 用：提交操作并同步等到结束。"""
@@ -169,23 +160,53 @@ class WorldService:
         raise UpstreamFailed("world switch did not finish in time", status_code=504)
 
     # -- 备份 ---------------------------------------------------------
-    def list_backups(self) -> list[dict[str, object]]:
-        if not self.backup_dir.is_dir():
-            return []
+    def list_backups(self, include_auto: bool = True) -> list[dict[str, object]]:
+        """手工备份目录 + Terraria 自己写的 .wld.bak/.bak2（kind=auto）。"""
         result: list[dict[str, object]] = []
-        for entry in sorted(self.backup_dir.iterdir(), reverse=True):
-            if not entry.is_dir():
-                continue
-            files = [p for p in entry.rglob("*") if p.is_file()]
-            result.append(
-                {
-                    "name": entry.name,
-                    "created_at": entry.stat().st_mtime,
-                    "files": len(files),
-                    "size": sum(p.stat().st_size for p in files),
-                }
-            )
+        if self.backup_dir.is_dir():
+            for entry in sorted(self.backup_dir.iterdir(), reverse=True):
+                if not entry.is_dir():
+                    continue
+                files = [p for p in entry.rglob("*") if p.is_file()]
+                result.append(
+                    {
+                        "name": entry.name,
+                        "created_at": entry.stat().st_mtime,
+                        "files": len(files),
+                        "size": sum(p.stat().st_size for p in files),
+                        "kind": "manual" if BACKUP_NAME_RE.match(entry.name) else "legacy",
+                        "restorable": any(p.suffix == ".wld" for p in files),
+                        "path": str(entry),
+                    }
+                )
+        if include_auto:
+            for path in sorted(self.worlds_dir.glob("*.wld.bak*")):
+                result.append(
+                    {
+                        "name": f"auto:{path.name}",
+                        "created_at": path.stat().st_mtime,
+                        "files": 1,
+                        "size": path.stat().st_size,
+                        "kind": "auto",
+                        "restorable": True,
+                        "path": str(path),
+                    }
+                )
         return result
+
+    def prune_backups(self, keep: int) -> dict[str, object]:
+        """只清理形如 20260917-080632 的自动/手工备份目录，保留 pre-restore 与迁移备份。"""
+        if keep <= 0 or not self.backup_dir.is_dir():
+            return {"removed": [], "kept": 0, "disabled": keep <= 0}
+        candidates = sorted(
+            (d for d in self.backup_dir.iterdir() if d.is_dir() and BACKUP_NAME_RE.match(d.name)),
+            reverse=True,
+        )
+        removed: list[str] = []
+        for stale in candidates[keep:]:
+            shutil.rmtree(stale, ignore_errors=True)
+            removed.append(stale.name)
+        return {"removed": removed, "kept": len(candidates[:keep]), "disabled": False}
 
     def backup(self, requested: str | None = None) -> Operation:
         """把世界文件（可指定单个）与 serverconfig.txt 复制到 backup/<时间戳>/。"""
@@ -193,6 +214,128 @@ class WorldService:
         return self._operations.submit(
             "world.backup", lambda progress: self._backup_job(filename, progress)
         )
+
+    def backup_now(self, requested: str | None = None) -> dict[str, object]:
+        """同步备份（定时任务用；HTTP 触发的那条走操作框架）。"""
+        filename = self.resolve(requested) if requested else None
+        return self._backup_job(filename, lambda *_args: None)
+
+    # -- 恢复 ---------------------------------------------------------
+    def resolve_backup(self, name: str) -> Path:
+        """把备份标识解析成磁盘上的文件，并挡住路径穿越。"""
+        if name.startswith("auto:"):
+            candidate = (self.worlds_dir / name[len("auto:") :]).resolve()
+            if candidate.parent != self.worlds_dir.resolve() or not candidate.is_file():
+                raise NotFound(f"备份不存在: {name}")
+            return candidate
+
+        if Path(name).name != name or not name:
+            raise BadRequest("invalid backup name")
+        directory = self.backup_dir / name
+        if not directory.is_dir():
+            raise NotFound(f"备份不存在: {name}")
+        worlds = sorted(directory.glob("*.wld"))
+        if not worlds:
+            raise BadRequest(f"备份 {name} 里没有 .wld 文件")
+        if len(worlds) > 1:
+            raise BadRequest(
+                f"备份 {name} 里有多个世界，请用 file 指定其中一个",
+                details={"candidates": [p.name for p in worlds]},
+            )
+        return worlds[0]
+
+    def restore(self, name: str, requested_file: str | None = None) -> Operation:
+        source = self.resolve_backup(name) if not requested_file else self._pick_in_backup(name, requested_file)
+        return self._operations.submit(
+            "world.restore",
+            lambda progress: self._restore_job(name, source, progress),
+        )
+
+    def _pick_in_backup(self, name: str, filename: str) -> Path:
+        if Path(filename).name != filename:
+            raise BadRequest("invalid filename")
+        if name.startswith("auto:"):
+            raise BadRequest("auto 备份只能恢复它自己")
+        candidate = (self.backup_dir / name / filename).resolve()
+        if not candidate.is_file():
+            raise NotFound(f"备份 {name} 里没有 {filename}")
+        return candidate
+
+    def _restore_job(self, name: str, source: Path, progress) -> dict[str, object]:
+        """恢复一个世界文件。
+
+        覆盖「当前正在使用的世界」有个坑：容器会在进程退出后立刻重启，如果直接覆盖文件，
+        服务端可能在启动读盘的中途被改写。所以走两段式：
+
+            保存 → 存安全副本 → exit（起来后仍加载旧世界）→ 覆盖文件 → exit-nosave
+            （起来后加载恢复后的世界）
+
+        第二次必须用 exit-nosave，否则退出时的保存会把刚恢复的文件覆盖回去。
+        """
+        target = self.worlds_dir / _target_name(source)
+        active = self.active_world_file()
+        is_active = target.name == active
+
+        progress(5, "保存当前世界")
+        try:
+            self._channel.send("save")
+        except Exception as exc:  # noqa: BLE001
+            raise UpstreamFailed(f"failed to save world: {exc}") from exc
+        time.sleep(SAVE_GRACE)
+
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safety = self.backup_dir / f"pre-restore-{stamp}"
+        safety.mkdir(parents=True, exist_ok=True)
+        if target.exists():
+            shutil.copy2(target, safety / target.name)
+        progress(15, f"安全副本已保存到 {safety.name}")
+
+        expected = _sha256(source)
+
+        if is_active:
+            progress(25, "重启服务端（准备替换世界文件）")
+            self._channel.send("exit")
+            self._wait_until_up(progress, base=30, span=25)
+
+            progress(60, "写入恢复后的世界文件")
+            shutil.copy2(source, target)
+            if _sha256(target) != expected:
+                raise UpstreamFailed("写入后的文件校验失败")
+
+            progress(70, "再次重启以加载恢复后的世界")
+            self._channel.send("exit-nosave")
+            self._wait_until_up(progress, base=75, span=20)
+        else:
+            progress(60, "写入世界文件（该世界当前未激活，无需重启）")
+            shutil.copy2(source, target)
+            if _sha256(target) != expected:
+                raise UpstreamFailed("写入后的文件校验失败")
+
+        self._status.invalidate()
+        return {
+            "restored": target.name,
+            "from": name,
+            "active": is_active,
+            "size": target.stat().st_size,
+            "sha256": expected,
+            "safety_copy": str(safety),
+        }
+
+    def _wait_until_up(self, progress, *, base: int, span: int, timeout: float = 45.0) -> None:
+        deadline = time.monotonic() + timeout
+        step = 0
+        while time.monotonic() < deadline:
+            try:
+                if "Terraria Server" in self._channel.run("version", timeout=2.0):
+                    self._status.invalidate()
+                    return
+            except Exception:  # noqa: BLE001 - 重启窗口内允许失败
+                pass
+            step += 1
+            progress(min(base + span, base + step * 3), "等待服务端重新监听")
+            time.sleep(1)
+        raise UpstreamFailed(f"服务端在 {int(timeout)} 秒内没有恢复")
+
 
     def _backup_job(self, filename: str | None, progress) -> dict[str, object]:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -218,3 +361,24 @@ class WorldService:
 
         progress(100, "备份完成")
         return {"backup": stamp, "files": copied}
+
+
+def _target_name(source: Path) -> str:
+    """备份文件对应的世界名。
+
+    Terraria 自己的备份是 `xxx.wld.bak` / `.bak2`，恢复时要还原成 `xxx.wld`，
+    否则会把备份恢复成一个新的「世界文件」而不是覆盖原世界。
+    """
+    name = source.name
+    for suffix in (".bak2", ".bak"):
+        if name.endswith(suffix) and name[: -len(suffix)].endswith(".wld"):
+            return name[: -len(suffix)]
+    return name
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

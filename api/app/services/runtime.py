@@ -12,10 +12,13 @@ from functools import lru_cache
 from app.core.settings import Settings
 from app.services.banlist import BanList
 from app.services.console.audit import AuditLog
+from app.services.log_events import LogEventWatcher
+from app.services.notifications import Notifier
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
 from app.services.console.log_reader import LogReader
 from app.services.operations import OperationRegistry
+from app.services.scheduler import DAILY, INTERVAL, JobSpec, Scheduler
 from app.services.server_service import ServerService
 from app.services.status import StatusCollector
 from app.services.world_service import WorldService
@@ -33,6 +36,89 @@ class Runtime:
     operations: OperationRegistry
     banlist: BanList
     audit: AuditLog
+    notifier: Notifier
+    events: LogEventWatcher
+    scheduler: Scheduler
+
+
+def build_job_specs(
+    settings: Settings,
+    server: ServerService,
+    world: WorldService,
+    notifier: Notifier,
+) -> list[JobSpec]:
+    """按配置组装定时任务（见 docs/roadmap.md 第一优先级）。"""
+    specs: list[JobSpec] = []
+
+    if settings.schedule_save_minutes > 0:
+        specs.append(
+            JobSpec(
+                name="save",
+                kind=INTERVAL,
+                interval_seconds=settings.schedule_save_minutes * 60,
+                description=f"每 {settings.schedule_save_minutes} 分钟保存一次世界",
+                runner=lambda: server.scheduled_save(settings.schedule_save_skip_empty),
+            )
+        )
+
+    if settings.schedule_backup_hours > 0:
+        def run_backup() -> str:
+            result = world.backup_now()
+            pruned = world.prune_backups(settings.schedule_backup_keep)
+            return (
+                f"backup={result['backup']} files={len(result['files'])} "
+                f"pruned={len(pruned['removed'])}"
+            )
+
+        specs.append(
+            JobSpec(
+                name="backup",
+                kind=INTERVAL,
+                interval_seconds=settings.schedule_backup_hours * 3600,
+                description=(
+                    f"每 {settings.schedule_backup_hours} 小时备份一次，"
+                    f"保留最近 {settings.schedule_backup_keep} 份"
+                ),
+                runner=run_backup,
+            )
+        )
+
+    if settings.schedule_restart_at:
+        specs.append(
+            JobSpec(
+                name="restart",
+                kind=DAILY,
+                at=settings.schedule_restart_at,
+                description=(
+                    f"每天 {settings.schedule_restart_at}（{settings.schedule_timezone}）重启"
+                    + ("，有人在线则跳过" if settings.schedule_restart_skip_if_players else "")
+                ),
+                runner=lambda: server.scheduled_restart(
+                    skip_if_players=settings.schedule_restart_skip_if_players,
+                    warn_minutes=settings.schedule_restart_warn_minutes,
+                ),
+            )
+        )
+    return specs
+
+
+def _job_result_notifier(notifier: Notifier):
+    def on_result(name: str, status: str, detail: str | None) -> None:
+        if status == "failed":
+            notifier.notify(
+                "schedule_failed", f"定时任务 {name} 执行失败", level="error",
+                detail={"detail": detail or ""},
+            )
+        elif name == "backup" and status == "succeeded":
+            notifier.notify(
+                "backup_done", "自动备份完成", level="success", detail={"detail": detail or ""}
+            )
+        elif name == "restart" and status == "skipped":
+            notifier.notify(
+                "restart_skipped", "定时重启已跳过", level="warning",
+                detail={"detail": detail or ""},
+            )
+    return on_result
 
 
 def build_runtime(settings: Settings | None = None) -> Runtime:
@@ -54,25 +140,40 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         static_ttl=settings.static_ttl,
     )
     operations = OperationRegistry()
+    notifier = Notifier(
+        settings.notify_webhook_url,
+        fmt=settings.notify_format,
+        events=settings.notify_events,
+    )
+    server_service = ServerService(channel, status, config, operations)
+    world_service = WorldService(
+        settings.worlds_dir,
+        config,
+        channel,
+        status,
+        reader,
+        operations,
+        settings.backup_dir,
+    )
+    scheduler = Scheduler(
+        build_job_specs(settings, server_service, world_service, notifier),
+        timezone=settings.schedule_timezone,
+        on_result=_job_result_notifier(notifier),
+    )
     return Runtime(
         settings=settings,
         reader=reader,
         channel=channel,
         config=config,
         status=status,
-        server=ServerService(channel, status, config, operations),
-        world=WorldService(
-            settings.worlds_dir,
-            config,
-            channel,
-            status,
-            reader,
-            operations,
-            settings.backup_dir,
-        ),
+        server=server_service,
+        world=world_service,
         operations=operations,
         banlist=BanList(settings.worlds_dir, settings.config_file),
         audit=AuditLog(),
+        notifier=notifier,
+        events=LogEventWatcher(reader, notifier),
+        scheduler=scheduler,
     )
 
 
