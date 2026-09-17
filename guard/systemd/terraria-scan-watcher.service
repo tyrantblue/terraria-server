@@ -17,6 +17,13 @@ Environment=RECOVER_THRESHOLD=5
 Environment=RECOVER_WINDOW=600
 Environment=RECOVER_COOLDOWN=1800
 
+# 成功登录自动加白名单（学习型）
+#   LEARN_ALLOW=0 关闭；LEARN_DWELL=0 登录即学习；LEARN_TTL=0 永久
+Environment=LEARN_ALLOW=1
+Environment=LEARN_DWELL=60
+Environment=LEARN_TTL=604800
+Environment=LEARN_MAX=200
+
 ExecStart=/usr/bin/python3 -u /opt/terraria/guard/terraria-watchd.py
 Restart=always
 RestartSec=5s

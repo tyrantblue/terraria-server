@@ -36,3 +36,40 @@ services:
       - ./control:/opt/terraria/control
       - ./config:/opt/terraria/config
       - ./worlds:/opt/terraria/worlds
+
+  # ---------------------------------------------------------------------------
+  # 连接守卫：把扫描/探测连接挡在 7777 之外，并在“假满员”时自动恢复。
+  # 说明见 README 第 28 节，原理/证据见 docs/connection-guard.md。
+  #
+  # 必须在宿主机网络命名空间里操作 netfilter，所以用 network_mode: host +
+  # NET_ADMIN（不是 privileged）。因此它不能加入 compose 的默认网络。
+  # 不需要 ports、不需要 depends_on：DOCKER-USER 链在 dockerd 启动时就存在，
+  # 守护脚本内部也会等待该链出现。
+  # ---------------------------------------------------------------------------
+  terraria-guard:
+    build:
+      context: ./guard
+      dockerfile: Dockerfile
+    container_name: terraria-guard
+    restart: unless-stopped
+
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+
+    volumes:
+      - ./guard:/opt/terraria/guard
+      - ./control:/opt/terraria/control
+
+    environment:
+      TERRARIA_PORT: "7777"
+      MAX_CONN_PER_IP: "4"          # 单 IP 同时连接数上限
+      NEW_CONN_RATE: "10/min"       # 单 IP 新建连接速率上限
+      NEW_CONN_BURST: "10"
+      ALLOWLIST_ONLY: "0"           # 1 = 只放行白名单
+      # 成功登录自动加白名单（学习型），详见 README 28.3
+      LEARN_ALLOW: "1"
+      LEARN_DWELL: "60"             # 至少在线 60 秒才学习（0=登录即学习）
+      LEARN_TTL: "604800"           # 白名单有效期 7 天（0=永久）
+      LEARN_MAX: "200"

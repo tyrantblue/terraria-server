@@ -12,7 +12,10 @@
 # 让“根本不是游戏客户端”的连接尽量进不到容器里：
 #
 #   1) 封禁集合  tg_ban    —— 由 terraria-watchd.py 动态填充，命中即 DROP
-#   2) 白名单    tg_allow  —— allow.txt 中的 IP/CIDR 直接放行，不受下面的限流影响
+#   2) 白名单    tg_allow  —— 直接放行，不受下面的限流影响。来源有两个：
+#                             · allow.txt          手工维护（自己人、Docker 内部网段）
+#                             · learned_allow.txt  watchd 自动学习（成功登录并在线满
+#                                                  LEARN_DWELL 秒的玩家 IP，带 TTL）
 #   3) 单 IP 并发连接数上限（connlimit）—— 一个 IP 最多同时开 N 条连接
 #   4) 单 IP 新建连接速率上限（hashlimit）—— 一分钟最多新建 R 条连接
 #   5) 可选：ALLOWLIST_ONLY=1 时变成“只允许白名单”，最严格
@@ -23,8 +26,8 @@
 #   sudo ./terraria-guard.sh remove    # 移除本脚本加的规则
 #
 # 可用环境变量覆盖（见下方默认值）：
-#   TERRAARIA_PORT / MAX_CONN_PER_IP / NEW_CONN_RATE / NEW_CONN_BURST
-#   ALLOWLIST_ONLY / ALLOW_FILE / BAN_TIMEOUT
+#   TERRARIA_PORT / MAX_CONN_PER_IP / NEW_CONN_RATE / NEW_CONN_BURST
+#   ALLOWLIST_ONLY / ALLOW_FILE / LEARNED_ALLOW_FILE / BAN_TIMEOUT
 #
 set -euo pipefail
 
@@ -42,6 +45,8 @@ BAN_SET="${BAN_SET:-tg_ban}"
 ALLOW_SET="${ALLOW_SET:-tg_allow}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALLOW_FILE="${ALLOW_FILE:-${SCRIPT_DIR}/allow.txt}"
+# terraria-watchd.py 自动维护的“学习型白名单”（每行：IP 过期时间戳，0=永久）
+LEARNED_ALLOW_FILE="${LEARNED_ALLOW_FILE:-${SCRIPT_DIR}/learned_allow.txt}"
 
 IPT="iptables"
 
@@ -82,25 +87,58 @@ del_marked() {
     done < <($IPT -S "$GUARD_CHAIN" 2>/dev/null | grep -F -- "--comment $MARK" || true)
 }
 
-load_allow() {
-    ipset flush "$ALLOW_SET"
-    if [ ! -f "$ALLOW_FILE" ]; then
-        warn "白名单文件不存在：$ALLOW_FILE（跳过）"
+add_allow_entry() {
+    local entry="$1"
+    [ -n "$entry" ] || return 1
+    if ipset add "$ALLOW_SET" "$entry" -exist 2>/dev/null; then
         return 0
     fi
+    warn "白名单条目无效，已忽略：$entry"
+    return 1
+}
 
+load_allow() {
+    ipset flush "$ALLOW_SET"
+
+    # 1) 手工维护的白名单
     local count=0 entry
-    while IFS= read -r entry; do
-        entry="${entry%%#*}"
-        entry="$(echo "$entry" | tr -d '[:space:]')"
-        [ -n "$entry" ] || continue
-        if ipset add "$ALLOW_SET" "$entry" -exist 2>/dev/null; then
-            count=$((count + 1))
-        else
-            warn "白名单条目无效，已忽略：$entry"
-        fi
-    done < "$ALLOW_FILE"
-    log "白名单载入 $count 条（$ALLOW_FILE）"
+    if [ -f "$ALLOW_FILE" ]; then
+        while IFS= read -r entry; do
+            entry="${entry%%#*}"
+            entry="$(echo "$entry" | tr -d '[:space:]')"
+            if add_allow_entry "$entry"; then
+                count=$((count + 1))
+            fi
+        done < "$ALLOW_FILE"
+        log "静态白名单载入 $count 条（$ALLOW_FILE）"
+    else
+        warn "白名单文件不存在：$ALLOW_FILE（跳过）"
+    fi
+
+    # 2) terraria-watchd.py 学习到的白名单（第二列是过期时间戳，0/缺省=永久）
+    #    注意：这里必须容错——learned 文件损坏时不能让 apply 半途退出，
+    #    否则规则已被 del_marked 删掉、端口就没有保护了。
+    local learned=0 expired=0
+    if [ -f "$LEARNED_ALLOW_FILE" ]; then
+        local now_ts
+        now_ts="$(date +%s)"
+        expired="$(awk -v now="$now_ts" '
+            /^[[:space:]]*#/ { next }
+            NF == 0 { next }
+            { ex = $2 + 0; if (ex != 0 && ex <= now) c++ }
+            END { print c + 0 }
+        ' "$LEARNED_ALLOW_FILE" 2>/dev/null || echo 0)"
+        while IFS= read -r entry; do
+            if add_allow_entry "$entry"; then
+                learned=$((learned + 1))
+            fi
+        done < <(awk -v now="$now_ts" '
+            /^[[:space:]]*#/ { next }
+            NF == 0 { next }
+            { ex = $2 + 0; if (ex == 0 || ex > now) print $1 }
+        ' "$LEARNED_ALLOW_FILE" 2>/dev/null || true)
+        log "学习型白名单载入 $learned 条（已跳过过期 ${expired:-0} 条，$LEARNED_ALLOW_FILE）"
+    fi
 }
 
 apply_sets() {
@@ -172,6 +210,9 @@ status() {
     else
         echo "  (ipset 未安装)"
     fi
+    echo "== 白名单来源 =="
+    echo "  静态:   $(grep -cvE '^[[:space:]]*(#|$)' "$ALLOW_FILE" 2>/dev/null || echo 0) 条  ($ALLOW_FILE)"
+    echo "  学习型: $(grep -cvE '^[[:space:]]*(#|$)' "$LEARNED_ALLOW_FILE" 2>/dev/null || echo 0) 条  ($LEARNED_ALLOW_FILE)"
 }
 
 require_root "$@"

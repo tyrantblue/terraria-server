@@ -10,6 +10,10 @@ control/
 # Runtime/application data
 data/
 
+# Guard runtime state (auto-learned whitelist contains player IPs)
+guard/learned_allow.txt
+guard/learned_allow.txt.tmp
+
 # Server secrets / local configuration
 config/serverconfig.txt
 

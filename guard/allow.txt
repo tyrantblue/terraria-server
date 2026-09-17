@@ -1,7 +1,13 @@
-# terraria-guard 白名单
+# terraria-guard 白名单（手工维护）
 #
 # 命中的来源 IP 会被放行：不做并发/速率限制，也不会被自动封禁。
 # 支持单个 IP 和 CIDR（例如 1.2.3.0/24）。
+#
+# 另有“自动学习”的白名单在 learned_allow.txt：
+#   terraria-watchd.py 会把成功登录、且在线满 LEARN_DWELL 秒（默认 60s）的
+#   玩家 IP 写进去，有效期 LEARN_TTL（默认 7 天）。该文件由守护进程维护，
+#   不要手工编辑；要临时禁用自动学习就在 service 里设 LEARN_ALLOW=0。
+#   退出白名单 = 删除 learned_allow.txt 里对应行 + `ipset del tg_allow <IP>`。
 #
 # 下面是根据 control/output.log 历史记录整理出的“真实玩家”IP，
 # 家用宽带 IP 会变，改完不需要重启服务：watchd 每 60s 重新读取本文件，

@@ -179,9 +179,9 @@ sudo /opt/terraria/guard/terraria-guard.sh apply
 sudo /opt/terraria/guard/terraria-guard.sh status
 ```
 
-### P0-2 自动封禁 + 假满员自动恢复 —— 以后不用再手动重启容器
+### P0-2 自动封禁 + 假满员自动恢复 + 学习型白名单
 
-`guard/terraria-watchd.py` 常驻，做两件事：
+`guard/terraria-watchd.py` 常驻，做三件事：
 
 1. **自动封禁**（默认 30 分钟内 5 次可疑连接 → 封 1 小时）：
    * `X is connecting...` 后 `JOIN_GRACE`（默认 10s）内 `lost connection...` 且期间没有 `has joined.`；
@@ -194,6 +194,10 @@ sudo /opt/terraria/guard/terraria-guard.sh status
    并且 30 分钟内最多自动重启一次，有人在线时绝不重启。
    进程启动时会先补读历史日志（用于重新封禁惯犯），**补读期间禁止任何动作**（`self.warmup`），
    避免“刚上线就把服务端 save+exit 一遍”。
+3. **学习型白名单**：玩家 `has joined.` 后等 `LEARN_DWELL`（默认 60s），
+   再用 `playing` 的输出精确解析「玩家名 → IP」，写入 `learned_allow.txt` 并即时 `ipset add tg_allow`。
+   该 IP 从此不受 `connlimit`/`hashlimit` 限制、也不会被自动封禁；条目默认 7 天过期，最多 200 条。
+   ⚠️ 这意味着“能登录 = 可信”，必须配合强密码；不想要就设 `LEARN_ALLOW=0`。
 
 用历史日志干跑一遍（本次结果：只封 8 个 IP，且全部是云主机扫描源，自己人一个没伤）：
 
@@ -275,16 +279,17 @@ ports:
 
 ## 5. 上线状态与操作手册
 
-### 5.1 当前状态（2026-09-17 14:15 CST 已生效）
+### 5.1 当前状态（2026-09-17 15:20 CST）
 
 | 项目 | 状态 |
 | --- | --- |
-| `ipset` | 已安装（v7.19） |
-| `DOCKER-USER` | 已加入 4 条 `terraria-guard` 规则：`tg_ban` DROP → `tg_allow` RETURN → 单 IP 并发 >4 DROP → 单 IP 新建 >10/min DROP |
+| `ipset` | 宿主机已安装（v7.19）；容器镜像里也带了 ipset/iptables |
+| 运行方式 | **Compose 侧车容器 `terraria-guard`**（`network_mode: host` + `NET_ADMIN`/`NET_RAW`），`docker compose up -d` 即随之启动 |
+| `DOCKER-USER` | 4 条 `terraria-guard` 规则：`tg_ban` DROP → `tg_allow` RETURN → 单 IP 并发 >4 DROP → 单 IP 新建 >10/min DROP |
 | `tg_ban` | 已自动封禁 8 个扫描源：`152.32.206.107`、`3.22.187.122`、`45.33.14.5`、`47.245.143.108`、`47.251.105.241`、`47.84.137.159`、`50.116.26.161`、`69.164.217.74` |
 | `tg_allow` | 8 条：7 个真实玩家 IP + `172.18.0.0/16`（Docker 内部网段，防止误封面板/本机） |
-| `terraria-guard.service` | enabled + active（开机自动应用规则） |
-| `terraria-scan-watcher.service` | enabled + active（自动封禁 + 假满员自动恢复，`journalctl -u terraria-scan-watcher -f` 观察） |
+| 学习型白名单 | 已启用（`LEARN_ALLOW=1`，在线 60s 后学习，7 天有效，最多 200 条），落地到 `guard/learned_allow.txt` |
+| `terraria-guard.service` / `terraria-scan-watcher.service` | **disabled + inactive**，仅作为不使用 Docker 时的备用方案 |
 | `config/serverconfig.txt` | `maxplayers=255`（原 8），世界 `gogogo.wld` 已 `save` 后优雅重启加载 |
 | 服务端 | `Player limit: 255`，`No players connected.` |
 
@@ -297,32 +302,36 @@ ports:
 ```bash
 cd /opt/terraria
 
-# 改动白名单后重新加载（幂等，不会清空 tg_ban）
-sudo ./guard/terraria-guard.sh apply
-sudo ./guard/terraria-guard.sh status
+# 看守护进程在做什么（strike/ban/learn/recover）
+docker compose logs -f terraria-guard
+docker compose ps                      # terraria-guard 必须保持 Up
 
-# 看守护进程在做什么
-journalctl -u terraria-scan-watcher -f
+# 改动 allow.txt 后重新加载（幂等，不会清空 tg_ban）
+sudo ./guard/terraria-guard.sh apply   # 宿主机直接跑，操作的是同一套 netfilter
+sudo ./guard/terraria-guard.sh status
 
 # 手工解封某个 IP
 sudo ipset del tg_ban <IP>
 
-# 临时关闭自动恢复（只保留封禁）
-sudo systemctl set-environment RECOVER_THRESHOLD=999999 && sudo systemctl restart terraria-scan-watcher
+# 临时关闭自动恢复 / 关闭自动白名单：改 docker-compose.yml 里的 environment 后
+docker compose up -d terraria-guard
 ```
 
 ### 5.3 安全验证（⚠️ 不要用裸 TCP 连接去试探 7777）
 
 ```bash
-# 规则是否在链上
+# 规则是否在链上（4 条）
 sudo iptables -S DOCKER-USER | grep terraria-guard
+# 容器与宿主机看到的是同一套规则
+docker exec terraria-guard iptables -S DOCKER-USER | grep -c terraria-guard
 # 白名单 / 封禁集合
 sudo ipset list tg_allow; sudo ipset list tg_ban
 # 规则命中计数（有扫描流量时会增长）
 sudo iptables -L DOCKER-USER -n -v | grep 7777
-# 守护日志（应只有 [ban]，新事件才会出现 [strike]/[recover]）
-journalctl -u terraria-scan-watcher -n 50 --no-pager
+# 守护日志（应只有 [ban]；新事件才会出现 [strike]/[learn]/[recover]）
+docker compose logs --tail 50 terraria-guard
 # 用真实游戏客户端登录一次，确认正常玩家不受影响
+# 登录满 60 秒后应看到 [learn] xxx 加入白名单 tg_allow，并出现在 learned_allow.txt
 ```
 
 真实远程流量走 DNAT → `FORWARD` → `DOCKER-USER`（与现有 8080 保护同一条链，
@@ -333,10 +342,12 @@ journalctl -u terraria-scan-watcher -n 50 --no-pager
 ### 5.4 回滚
 
 ```bash
-sudo systemctl disable --now terraria-scan-watcher.service terraria-guard.service
-sudo ./guard/terraria-guard.sh remove
+cd /opt/terraria
+docker compose stop terraria-guard          # 入口脚本的 trap 会撤销规则
+sudo ./guard/terraria-guard.sh remove       # 双保险
 # 游戏容器本身没有被改造，回滚后行为与之前完全一致
 # 如需恢复旧上限：把 config/serverconfig.txt 改回 maxplayers=8 并重启容器
+# 如想改用 systemd 方案：systemctl enable --now terraria-guard terraria-scan-watcher
 ```
 
 ---
@@ -346,14 +357,16 @@ sudo ./guard/terraria-guard.sh remove
 | 文件 | 状态 | 说明 |
 | --- | --- | --- |
 | `guard/terraria-guard.sh` | ✅ 新增并已应用 | 网络层限流 + 封禁/白名单集合（`apply/remove/status`，幂等） |
-| `guard/terraria-watchd.py` | ✅ 新增并常驻 | 自动封禁 + 假满员自动恢复（纯标准库；`--dry-run/--once/--backfill`） |
-| `guard/allow.txt` | ✅ 新增 | 白名单：7 个真实玩家 IP + `172.18.0.0/16` |
-| `guard/systemd/terraria-guard.service` | ✅ 已 enable | 开机自动应用防火墙规则 |
-| `guard/systemd/terraria-scan-watcher.service` | ✅ 已 enable | 开机自动拉起守护进程（`python3 -u`） |
+| `guard/terraria-watchd.py` | ✅ 新增并常驻 | 自动封禁 + 假满员自动恢复 + 学习型白名单（纯标准库；`--dry-run/--once/--backfill/--no-learn`） |
+| `guard/allow.txt` | ✅ 新增 | 手工白名单：7 个真实玩家 IP + `172.18.0.0/16` |
+| `guard/learned_allow.txt` | ✅ 运行时生成 | 学习型白名单（IP + 过期时间戳），已加入 `.gitignore` |
+| `guard/Dockerfile` | ✅ 新增 | 守卫镜像：debian-slim + iptables(nft)/ipset/python3 |
+| `guard/docker-entrypoint.sh` | ✅ 新增 | 侧车入口：apply → 运行守护 → 退出时 remove |
+| `docker-compose.yml` | ✅ 已改 | 新增 `terraria-guard` 服务（host 网络 + NET_ADMIN）；`7777/udp` 映射仍待删 |
+| `guard/systemd/*.service` | ✅ 保留为备用 | 已 disable；改用 Docker 部署时不要同时启用 |
 | `docs/connection-guard.md` | ✅ 新增 | 本文 |
 | `config/serverconfig.txt` | ✅ 已改 | `maxplayers=255`（未提交 Git：含密码） |
-| `docker-compose.yml` | ⏳ 待改 | 删除无用的 `7777/udp` 映射（需 `docker compose up -d` 重建容器） |
-| `password` | ⏳ 待改 | 仍是弱口令；改成强密码会让所有玩家需要重新输入，建议通知后一起改 |
+| `password` | ⏳ 待改 | 仍是弱口令；**启用自动白名单后更必须换掉**，建议通知玩家后一起改 |
 | `start.sh` | ⏳ 待改 | 日志加时间戳（需同步改 API 解析）、服务端退出后在容器内自动重启 |
 | `api/app/routers/server.py` | ⏳ 待改 | `/status` 加缓存 + 解析改 `re.search` + 尾部读取日志 |
 | `api/app/main.py` | ⏳ 待改 | 加 Bearer token、收窄 CORS |

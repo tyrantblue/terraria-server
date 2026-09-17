@@ -801,13 +801,16 @@ git pull
        前端                            Ubuntu 24.04
              │                             │
              │ HTTPS                       │
-             ▼                             ├── Terraria :7777
-      React + Vite                         │
+             ▼                             ├── Terraria :7777  ← 由 terraria-guard
+      React + Vite                         │     在 DOCKER-USER 链上过滤
       管理面板                              └── FastAPI :8080
              │                                  │
              │ HTTPS                            │
              └──────────────────────────────────┘
 ```
+
+Docker Compose 服务：`terraria`（游戏服务端）、`terraria-api`（面板后端）、
+`terraria-guard`（连接守卫，host 网络 —— 见第 28 节）。
 
 前端：
 
@@ -852,6 +855,20 @@ GitHub
 
 因此更换 VPS 时，不需要把整个 `/opt/terraria` 原样复制过去。
 
+只需要：
+
+```text
+Git clone
+    ↓
+恢复 worlds/
+    ↓
+恢复 serverconfig.txt
+    ↓
+docker compose up -d --build
+```
+
+即可重新建立服务器（连接守卫也已放进 compose，见第 28 节）。
+
 ---
 
 # 28. 连接守卫（防端口扫描 / 「人数已满」修复）
@@ -886,46 +903,85 @@ Object name: 'System.Net.Sockets.NetworkStream'.
 | 组件 | 作用 |
 | --- | --- |
 | `guard/terraria-guard.sh` | 在 Docker 的 `DOCKER-USER` 链上加规则：动态封禁集合、白名单、单 IP 并发连接上限（4）、单 IP 新建连接速率上限（10/min）。`apply` / `status` / `remove` 幂等。 |
-| `guard/terraria-watchd.py` | 守护进程：自动封禁扫描类 IP（连上就掉且从未 join、发畸形包），并在「假满员」时用 `save` + `exit` 自动恢复。 |
-| `guard/allow.txt` | 可信玩家 IP（不受限流、不会被封）+ Docker 内部网段 `172.18.0.0/16`。 |
-| `guard/systemd/*.service` | `terraria-guard.service` 开机重新应用规则；`terraria-scan-watcher.service` 常驻守护进程。 |
+| `guard/terraria-watchd.py` | 守护进程：自动封禁扫描类 IP（连上就掉且从未 join、发畸形包）、在「假满员」时用 `save` + `exit` 自动恢复，并给成功登录的玩家自动加白名单。 |
+| `guard/allow.txt` | 手工维护的白名单：可信玩家 IP（不受限流、不会被封）+ Docker 内部网段 `172.18.0.0/16`。 |
+| `guard/learned_allow.txt` | 守护进程自动生成：成功登录并在线满时长的玩家 IP。不纳入 Git。 |
+| `guard/Dockerfile` + `guard/docker-entrypoint.sh` | 侧车容器镜像与入口：应用规则 → 运行守护进程 → `docker compose down` 时移除规则。 |
+| `guard/systemd/*.service` | 备用的“非 Docker”部署方式（开机应用规则 + 常驻守护）。侧车在跑时请保持它们 **disabled**。 |
 | `config/serverconfig.txt` | `maxplayers` 由 `8` 提升到 `255`（缓冲扩大 30 倍）。该文件不纳入 Git。 |
 
-## 28.3 日常操作
+### 运行方式：Compose 侧车容器
+
+`docker-compose.yml` 里多了一个 `terraria-guard` 服务。它使用 `network_mode: host` 加
+`NET_ADMIN`/`NET_RAW`（不是 `privileged`），因此容器里的 `iptables`/`ipset` 直接作用于
+**宿主机**的 netfilter——也就是其他容器发布端口所经过的同一条 `DOCKER-USER` 链。
+它同时挂载 `./control`（FIFO + 日志）和 `./guard`（脚本、`allow.txt`、`learned_allow.txt`）。
+
+带来的好处：
+
+* **迁移时一条 `docker compose up -d --build` 就够了**，不需要在宿主机上额外装软件、
+  也不需要装 systemd 单元。
+* 守卫参数（`MAX_CONN_PER_IP`、`NEW_CONN_RATE`、`ALLOWLIST_ONLY`、`LEARN_*` 等）都写在
+  `docker-compose.yml` 里，跟着仓库一起走。
+* 规则应用失败时容器会以非 0 退出，`docker compose ps` 会显示它在重启，
+  不会出现“服务在跑但其实没防护”的静默状态。
+* 代价：这个容器持有宿主机网络命名空间和 `NET_ADMIN`，也就是有能力改写宿主机防火墙。
+  这正是它需要做的事，但权限确实比 systemd 方案大。如果不接受，可以停掉
+  `terraria-guard` 服务改用 `guard/systemd/` 里的单元（**不要同时开两套**）。
+
+## 28.3 登录成功自动加白名单（学习型）
+
+玩家 `has joined.` 之后，守护进程会等 `LEARN_DWELL` 秒，再用 `playing` 的输出精确解析出
+该玩家名对应的 IP，写入 `guard/learned_allow.txt` 并即时加入 `tg_allow` 集合。
+进入白名单的 IP 不受连接限流，也不会被自动封禁。
+
+| 环境变量 | 默认值 | 含义 |
+| --- | --- | --- |
+| `LEARN_ALLOW` | `1` | 设 `0` 彻底关闭自动加白名单 |
+| `LEARN_DWELL` | `60` | 至少在线多少秒才学习（`0` = 登录即学习） |
+| `LEARN_TTL` | `604800` | 条目有效期（秒，`0` = 永久） |
+| `LEARN_MAX` | `200` | 最多保留条数，超出时淘汰最早过期的 |
+
+> ⚠️ **安全取舍**：`tg_allow` 是**完全绕过** `connlimit`/`hashlimit` 的，所以这个功能等价于
+> “能登录 = 可信”。谁知道服务器密码，谁就能登录一次、然后无限开连接。
+> **依赖这个功能之前务必先把弱口令换掉**；或者设 `LEARN_ALLOW=0`，回到手工维护 `allow.txt`。
+
+撤销单个条目：删掉 `guard/learned_allow.txt` 里对应行，再 `sudo ipset del tg_allow <IP>`。
+全部撤销：停掉守卫容器、删掉该文件，再 `docker compose up -d terraria-guard`。
+
+## 28.4 日常操作
 
 ```bash
-sudo /opt/terraria/guard/terraria-guard.sh status     # 查看规则与集合
+docker compose logs -f terraria-guard                 # 观察 [strike] / [ban] / [learn] / [recover]
+docker compose restart terraria-guard                 # 重新应用规则（如 Docker 升级后）
+docker compose ps                                     # terraria-guard 应保持 Up
+
+# 脚本也可以在宿主机上直接跑（操作的是同一套 netfilter）：
+sudo /opt/terraria/guard/terraria-guard.sh status     # 查看规则、集合与白名单条数
 sudo /opt/terraria/guard/terraria-guard.sh apply      # 修改 allow.txt 后重新加载
 sudo ipset del tg_ban <IP>                            # 手动解封某个 IP
-journalctl -u terraria-scan-watcher -f                # 观察 [strike] / [ban] / [recover]
+```
+
+守卫容器跑在 host 网络上并写宿主机防火墙，所以宿主机重启或 Docker 升级之后，
+确认它还活着、规则还在：
+
+```bash
+docker compose ps
+sudo iptables -S DOCKER-USER | grep terraria-guard     # 应该是 4 条
 ```
 
 ⚠️ 不要用 `nc` 或 `/dev/tcp` 去试探 7777：不经握手的裸 TCP 连接正是让服务端崩溃的触发器，
 请用真实游戏客户端验证。
 
-玩家登录成功**不会**自动加入 `guard/allow.txt`。成功登录只会在守护进程内部获得一段时间的
-「免封禁」待遇；如需永久放行，请手动编辑 `allow.txt` 并执行一次 `terraria-guard.sh apply`。
-
-## 28.4 回滚
+## 28.5 回滚
 
 ```bash
-sudo systemctl disable --now terraria-scan-watcher.service terraria-guard.service
-sudo /opt/terraria/guard/terraria-guard.sh remove
+# 停掉守卫（入口脚本的 trap 会自己把规则撤掉）
+docker compose stop terraria-guard
+sudo /opt/terraria/guard/terraria-guard.sh remove     # 双保险
 # 再把 config/serverconfig.txt 的 maxplayers 改回 8 并重启容器
 ```
 
 游戏容器本身没有被改造，回滚后行为与之前完全一致。
-
-只需要：
-
-```text
-Git clone
-    ↓
-恢复 worlds/
-    ↓
-恢复 serverconfig.txt
-    ↓
-docker compose up -d --build
-```
-
-即可重新建立服务器。
+`guard/systemd/` 里的单元仍可作为替代方案使用，但要在 `terraria-guard` 服务停止时才启用
+（两套不能同时跑）。

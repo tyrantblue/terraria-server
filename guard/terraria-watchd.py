@@ -2,7 +2,7 @@
 """
 terraria-watchd.py —— Terraria 服务器连接守卫守护进程
 
-做两件事（可用 --no-ban / --no-recover 关掉其中一件）：
+做三件事（可用 --no-ban / --no-recover / --no-learn 分别关掉）：
 
 1) 自动封禁扫描器
    读取 /opt/terraria/control/output.log，识别“连上来又马上掉线、从未 join”的 IP，
@@ -15,10 +15,24 @@ terraria-watchd.py —— Terraria 服务器连接守卫守护进程
    本守护检测到该状态后，通过控制 FIFO 执行 `save` + `exit`，
    让容器 restart 策略把服务端干净地重启（世界会保存），不再需要人工重启容器。
 
+3) 成功登录自动加白名单（学习型）
+   玩家 `has joined.` 之后，等它在线满 LEARN_DWELL 秒，再用 `playing` 的输出
+   精确取出该玩家的 IP，写入 learned_allow.txt 并即时加入 ipset(tg_allow)，
+   于是这个 IP 不再受限流、也不会被自动封禁。
+   ⚠️ 注意：tg_allow 是**完全绕过** connlimit/hashlimit 的，所以这条链路等于
+   “能登录 = 可信”。请务必配合强密码；不想要这个行为就设 LEARN_ALLOW=0
+   或加 --no-learn。
+
+   安全护栏（可用环境变量调整）：
+     LEARN_DWELL=60    必须在线满 60 秒才学习（0=登录即学习）
+     LEARN_TTL=604800  白名单有效期 7 天（0=永久）
+     LEARN_MAX=200     最多保留 200 条，超出时淘汰最早过期的
+
 用法：
     sudo python3 terraria-watchd.py                 # 前台运行
     sudo python3 terraria-watchd.py --dry-run       # 只打印不动作
     sudo python3 terraria-watchd.py --backfill      # 先扫一遍历史日志再实时跟随
+    sudo python3 terraria-watchd.py --no-learn      # 关闭自动加白名单
 
 systemd 常驻见 guard/systemd/terraria-scan-watcher.service
 """
@@ -42,9 +56,13 @@ LOG_FILE = CONTROL_DIR / "output.log"
 FIFO_FILE = CONTROL_DIR / "command.fifo"
 SCRIPT_DIR = Path(__file__).resolve().parent
 ALLOW_FILE = Path(os.environ.get("TERRARIA_ALLOW_FILE", SCRIPT_DIR / "allow.txt"))
+LEARNED_ALLOW_FILE = Path(
+    os.environ.get("TERRARIA_LEARNED_ALLOW_FILE", SCRIPT_DIR / "learned_allow.txt")
+)
 
 GUARD_CHAIN = os.environ.get("GUARD_CHAIN", "DOCKER-USER")
 BAN_SET = os.environ.get("BAN_SET", "tg_ban")
+ALLOW_SET = os.environ.get("ALLOW_SET", "tg_allow")
 PORT = int(os.environ.get("TERRARIA_PORT", "7777"))
 
 # 判定参数
@@ -55,6 +73,13 @@ BAN_TIME = int(os.environ.get("BAN_TIME", "3600"))       # 封禁时长（秒）
 REJOIN_SAFE = float(os.environ.get("REJOIN_SAFE", "1800"))  # 最近 join 过的 IP 在此时长内不封
 MAX_BANS_PER_MIN = int(os.environ.get("MAX_BANS_PER_MIN", "30"))
 ALLOW_RELOAD = float(os.environ.get("ALLOW_RELOAD", "60"))
+
+# 成功登录后自动加入白名单（tg_allow，完全绕过 connlimit/hashlimit）
+LEARN_ALLOW = os.environ.get("LEARN_ALLOW", "1").lower() not in ("0", "false", "no", "")
+LEARN_DWELL = float(os.environ.get("LEARN_DWELL", "60"))    # 至少在线这么多秒才学习（0=立即）
+LEARN_TTL = int(os.environ.get("LEARN_TTL", str(7 * 86400)))  # 学习条目的有效期（秒，0=永久）
+LEARN_MAX = int(os.environ.get("LEARN_MAX", "200"))        # 最多保留多少条学习条目
+LEARN_PRUNE_INTERVAL = float(os.environ.get("LEARN_PRUNE_INTERVAL", "300"))  # 清理周期（秒）
 
 # 假满员自动恢复
 RECOVER_THRESHOLD = int(os.environ.get("RECOVER_THRESHOLD", "5"))   # 窗口内 full 提示次数
@@ -70,6 +95,10 @@ RE_LOST = re.compile(rf"^(?::\s*)?{IP}:(?P<port>\d+) lost connection\.\.\.\s*$")
 RE_BOOTED = re.compile(rf"^(?::\s*)?{IP}:(?P<port>\d+) was booted:\s*(?P<reason>.*?)\s*$")
 RE_JOINED = re.compile(r"^(?::\s*)?(?P<name>.+?) has joined\.\s*$")
 RE_LISTENING = re.compile(r"Listening on port \d+")
+# playing 输出里的玩家行：  用户名 (1.2.3.4:56789)
+RE_PLAYER_LINE = re.compile(
+    rf"^:?\s*(?P<name>.+?) \((?P<ip>\d{{1,3}}(?:\.\d{{1,3}}){{3}}):\d+\)\s*$"
+)
 
 FULL_REASON = "This server is full right now"
 MALFORMED_REASON = "Invalid operation at this state."
@@ -157,6 +186,18 @@ class Firewall:
             self.bans_this_min.append(now())
             print(f"[ban] {ip} 封禁 {seconds}s")
 
+    def allow(self, ip: str) -> bool:
+        """把 IP 加进 tg_allow（立即绕过 connlimit/hashlimit，且不会被封）。"""
+        if not self.has_ipset:
+            print("[warn] 未安装 ipset，无法自动加白名单", file=sys.stderr)
+            return False
+        return self._run(["ipset", "add", ALLOW_SET, ip, "-exist"])
+
+    def disallow(self, ip: str) -> bool:
+        if not self.has_ipset:
+            return False
+        return self._run(["ipset", "del", ALLOW_SET, ip])
+
     def sweep(self) -> None:
         """iptables 兜底模式下清理过期规则。"""
         if self.has_ipset or self.dry_run:
@@ -224,7 +265,17 @@ class Console:
             return -1  # 未知
         if "No players connected." in text:
             return 0
-        return sum(1 for line in text.splitlines() if re.match(r"^:?\s*.+? \(.+:\d+\)\s*$", line))
+        return sum(1 for line in text.splitlines() if RE_PLAYER_LINE.match(line))
+
+    def players_with_ip(self) -> dict[str, str]:
+        """执行 playing，返回 {玩家名: IP}（playing 的输出才是“名字 ↔ IP”的权威来源）。"""
+        text = self.query("playing")
+        result: dict[str, str] = {}
+        for line in text.splitlines():
+            m = RE_PLAYER_LINE.match(line)
+            if m:
+                result[m.group("name").strip()] = m.group("ip")
+        return result
 
 
 # ---------------------------------------------------------------- 守护主体
@@ -248,7 +299,108 @@ class Watchdog:
         # 这段“补课”期间绝不能触发 save/exit 之类的动作。
         self.warmup = True
 
+        # 学习型白名单：成功登录并在线满 LEARN_DWELL 秒的玩家 IP
+        self.learned: dict[str, int] = {}          # ip -> 过期时间戳（0=永久）
+        self.learn_queue: deque[tuple[str, float]] = deque()  # (玩家名, 到期检查时间)
+        self.last_prune = 0.0
+
+    # -- 学习型白名单 -------------------------------------------------
+    def load_learned(self) -> None:
+        if not LEARNED_ALLOW_FILE.exists():
+            return
+        current = int(time.time())
+        loaded = {}
+        for raw in LEARNED_ALLOW_FILE.read_text(encoding="utf-8").splitlines():
+            raw = raw.split("#", 1)[0].strip()
+            if not raw:
+                continue
+            parts = raw.split()
+            ip = parts[0]
+            try:
+                expiry = int(parts[1]) if len(parts) > 1 else 0
+            except ValueError:
+                expiry = 0
+            if expiry and expiry <= current:
+                continue
+            loaded[ip] = expiry
+        self.learned = loaded
+        if loaded:
+            print(f"[watchd] 载入学习型白名单 {len(loaded)} 条（{LEARNED_ALLOW_FILE}）")
+
+    def write_learned(self) -> None:
+        items = list(self.learned.items())
+        if LEARN_MAX > 0 and len(items) > LEARN_MAX:
+            # 到期时间越晚越“新”，优先淘汰最早过期的
+            items.sort(key=lambda kv: kv[1] or (1 << 62))
+            for ip, _ in items[: len(items) - LEARN_MAX]:
+                self.learned.pop(ip, None)
+                if not self.static_allowed(ip):
+                    self.fw.disallow(ip)
+                print(f"[learn] 超出上限，移除 {ip}")
+            items = list(self.learned.items())
+        lines = [
+            "# terraria-watchd 自动学习到的白名单（格式：IP 过期时间戳，0=永久）",
+            "# 由守护进程维护，不要手工编辑；手工白名单请写在 allow.txt",
+        ]
+        lines += [f"{ip} {exp}" for ip, exp in sorted(items, key=lambda kv: kv[1])]
+        tmp = LEARNED_ALLOW_FILE.with_name(LEARNED_ALLOW_FILE.name + ".tmp")
+        tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        tmp.replace(LEARNED_ALLOW_FILE)
+
+    def learn_ip(self, ip: str, name: str) -> None:
+        if self.static_allowed(ip):
+            return
+        expiry = 0 if LEARN_TTL <= 0 else int(time.time()) + LEARN_TTL
+        if self.learned.get(ip) == expiry:
+            return
+        self.learned[ip] = expiry
+        self.write_learned()
+        self.fw.allow(ip)
+        human = "永久" if expiry == 0 else f"{LEARN_TTL // 86400} 天"
+        print(f"[learn] {ip} ({name}) 加入白名单 {ALLOW_SET}，有效期 {human}")
+
+    def process_learn_queue(self) -> None:
+        if not LEARN_ALLOW or self.args.no_learn or not self.learn_queue:
+            return
+        t = now()
+        if self.learn_queue[0][1] > t:
+            return
+        due: list[str] = []
+        while self.learn_queue and self.learn_queue[0][1] <= t:
+            due.append(self.learn_queue.popleft()[0])
+        online = self.console.players_with_ip()
+        for name in due:
+            ip = online.get(name)
+            if ip:
+                self.learn_ip(ip, name)
+            else:
+                print(f"[learn] {name} 未满在线时长就离开了，不加入白名单")
+
+    def prune_learned(self, force: bool = False) -> None:
+        t = now()
+        if not force and t - self.last_prune < LEARN_PRUNE_INTERVAL:
+            return
+        self.last_prune = t
+        current = int(time.time())
+        expired = [ip for ip, exp in self.learned.items() if exp and exp <= current]
+        if not expired:
+            return
+        for ip in expired:
+            self.learned.pop(ip, None)
+            if not self.static_allowed(ip):
+                self.fw.disallow(ip)
+            print(f"[learn] {ip} 白名单已过期，移除")
+        self.write_learned()
+
     # -- 白名单 -------------------------------------------------------
+    def static_allowed(self, ip: str) -> bool:
+        self.load_allow()
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        return any(addr in net for net in self.allow)
+
     def load_allow(self, force: bool = False) -> None:
         t = self.clock()
         if not force and t - self.allow_loaded_at < ALLOW_RELOAD:
@@ -267,12 +419,8 @@ class Watchdog:
         self.allow = entries
 
     def allowed(self, ip: str) -> bool:
-        self.load_allow()
-        try:
-            addr = ipaddress.ip_address(ip)
-        except ValueError:
-            return False
-        return any(addr in net for net in self.allow)
+        """静态白名单或学习型白名单命中都算放行。"""
+        return self.static_allowed(ip) or ip in self.learned
 
     # -- 可疑连接判定 -------------------------------------------------
     def add_strike(self, ip: str, reason: str) -> None:
@@ -336,6 +484,9 @@ class Watchdog:
                 self.pending.pop((ip, _port), None)
                 self.last_join[ip] = t
                 self.strikes.pop(ip, None)
+            # 学习型白名单：先排队，等在线满 LEARN_DWELL 秒后再用 playing 精确取 IP
+            if LEARN_ALLOW and not self.args.no_learn and not self.clock.virtual:
+                self.learn_queue.append((m.group("name").strip(), t + LEARN_DWELL))
             return
 
         if RE_LISTENING.search(line):
@@ -379,10 +530,16 @@ class Watchdog:
 
     # -- 主循环 -------------------------------------------------------
     def follow(self, backfill: bool) -> None:
-        print(f"[watchd] 监控 {LOG_FILE}  ban={self.args.ban} recover={self.args.recover} dry_run={self.args.dry_run}")
+        print(
+            f"[watchd] 监控 {LOG_FILE}  ban={self.args.ban} recover={self.args.recover} "
+            f"learn={LEARN_ALLOW and not self.args.no_learn} dry_run={self.args.dry_run}"
+        )
         offset = 0
         inode = None
         line_no = 0
+
+        self.load_learned()
+        self.prune_learned(force=True)
 
         if backfill and LOG_FILE.exists():
             print("[watchd] --backfill：先处理历史日志（只做封禁判定）")
@@ -419,6 +576,9 @@ class Watchdog:
                         offset = fh.tell()
             except OSError as exc:
                 print(f"[warn] 读取日志失败: {exc}", file=sys.stderr)
+            if not self.warmup:
+                self.process_learn_queue()
+                self.prune_learned()
             if first_pass:
                 first_pass = False
                 self.warmup = False
@@ -438,11 +598,12 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Terraria 连接守卫守护进程")
     p.add_argument("--no-ban", dest="ban", action="store_false", help="关闭自动封禁")
     p.add_argument("--no-recover", dest="recover", action="store_false", help="关闭假满员自动恢复")
+    p.add_argument("--no-learn", dest="no_learn", action="store_true", help="关闭“登录成功自动加白名单”")
     p.add_argument("--dry-run", action="store_true", help="只打印将要执行的动作")
     p.add_argument("--backfill", action="store_true", help="启动时先处理历史日志")
     p.add_argument("--once", action="store_true", help="处理完当前日志后退出（适合 cron/测试）")
     p.add_argument("--verbose", action="store_true")
-    p.set_defaults(ban=True, recover=True)
+    p.set_defaults(ban=True, recover=True, no_learn=False)
     return p.parse_args()
 
 
