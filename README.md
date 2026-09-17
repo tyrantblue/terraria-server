@@ -23,6 +23,8 @@ The server is deployed under:
 ├── backup/                    # World backups
 ├── control/                   # Runtime FIFO and logs
 ├── data/                      # Runtime data
+├── guard/                      # Connection guard (anti port-scan) -- see section 28
+├── docs/                       # Analysis and runbooks
 ├── Dockerfile                 # Terraria server image
 ├── docker-compose.yml         # Docker Compose configuration
 ├── start.sh                   # Terraria startup script
@@ -33,6 +35,8 @@ The server is deployed under:
 
 ```text
 api/
+guard/
+docs/
 Dockerfile
 docker-compose.yml
 start.sh
@@ -848,3 +852,69 @@ Server
 **Game data must be backed up and migrated separately.**
 
 This makes VPS replacement or recovery much easier.
+
+---
+
+# 28. Connection Guard (anti port-scan / "server is full" fix)
+
+## 28.1 The problem
+
+The vanilla Linux dedicated server counts **every TCP connection to port 7777** against
+`maxplayers` — including port scanners, Censys/Rapid7 probes and cloud-hosted bots that
+connect and immediately drop. Those slots are often never released, so the server reports
+`No players connected.` while every new player is rejected with
+`This server is full right now`, until the container is restarted.
+
+Worse, a connection that opens without completing the handshake can **crash** the server:
+
+```text
+Unhandled Exception
+Exception: System.ObjectDisposedException: Cannot access a disposed object.
+Object name: 'System.Net.Sockets.NetworkStream'.
+  at Terraria.Net.Sockets.TcpSocket...IsConnected ()
+  at Terraria.RemoteClient.IsConnected ()
+  at Terraria.Netplay.UpdateConnectedClients ()
+  at Terraria.Netplay.ServerLoop ()
+[ERROR] FATAL UNHANDLED EXCEPTION: ...
+```
+
+The password does not help: it is checked *after* the TCP connection has already taken a
+slot. Only blocking non-game connections at the network layer fixes this.
+
+Full analysis, log evidence and upstream bug references: `docs/connection-guard.md`.
+
+## 28.2 What was deployed
+
+| Component | Purpose |
+| --- | --- |
+| `guard/terraria-guard.sh` | Rules in Docker's `DOCKER-USER` chain: dynamic ban set, allow-list, per-IP concurrent connection limit (4), per-IP new-connection rate limit (10/min). Idempotent `apply` / `status` / `remove`. |
+| `guard/terraria-watchd.py` | Daemon: auto-bans scan-like IPs (connect-then-drop without ever joining, malformed packets) and auto-recovers from the phantom-full state with `save` + `exit`. |
+| `guard/allow.txt` | Trusted player IPs (exempt from limits and bans) plus `172.18.0.0/16` for Docker-internal traffic. |
+| `guard/systemd/*.service` | `terraria-guard.service` re-applies the rules at boot; `terraria-scan-watcher.service` keeps the daemon running. |
+| `config/serverconfig.txt` | `maxplayers` raised from `8` to `255` (30x more headroom). Not tracked by Git. |
+
+## 28.3 Daily operations
+
+```bash
+sudo /opt/terraria/guard/terraria-guard.sh status     # show rules and sets
+sudo /opt/terraria/guard/terraria-guard.sh apply      # reload after editing allow.txt
+sudo ipset del tg_ban <IP>                            # unban a single IP
+journalctl -u terraria-scan-watcher -f                # watch [strike] / [ban] / [recover]
+```
+
+Never probe the port with `nc` or `/dev/tcp`: a raw TCP connection without a handshake is
+exactly what crashes the server. Always test with a real game client.
+
+A player's IP is **not** added to `guard/allow.txt` automatically. A successful login only
+grants a temporary ban-exemption inside the daemon; edit `allow.txt` and re-run
+`terraria-guard.sh apply` if you want an IP permanently exempted.
+
+## 28.4 Rollback
+
+```bash
+sudo systemctl disable --now terraria-scan-watcher.service terraria-guard.service
+sudo /opt/terraria/guard/terraria-guard.sh remove
+# then set maxplayers back to 8 in config/serverconfig.txt and restart the container
+```
+
+The game container itself was not modified, so rollback restores the previous behaviour.

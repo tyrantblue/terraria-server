@@ -1,0 +1,30 @@
+[Unit]
+Description=Terraria watchdog - auto ban scanners and recover from phantom-full
+Documentation=file:/opt/terraria/docs/connection-guard.md
+After=docker.service network-online.target
+Wants=network-online.target terraria-guard.service
+
+[Service]
+Type=simple
+User=root
+
+# 判定阈值（详见 terraria-watchd.py 顶部注释）
+Environment=STRIKES=5
+Environment=STRIKE_WINDOW=1800
+Environment=JOIN_GRACE=10
+Environment=BAN_TIME=3600
+Environment=RECOVER_THRESHOLD=5
+Environment=RECOVER_WINDOW=600
+Environment=RECOVER_COOLDOWN=1800
+
+ExecStart=/usr/bin/python3 -u /opt/terraria/guard/terraria-watchd.py
+Restart=always
+RestartSec=5s
+
+# 轻量限制，避免意外刷屏
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=terraria-watchd
+
+[Install]
+WantedBy=multi-user.target

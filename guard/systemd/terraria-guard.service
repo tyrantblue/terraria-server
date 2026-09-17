@@ -1,0 +1,25 @@
+[Unit]
+Description=Terraria guard - limit/deny abnormal TCP connections to port 7777
+Documentation=file:/opt/terraria/docs/connection-guard.md
+After=docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+
+# 按需调整：单 IP 并发上限 / 新建速率 / 是否只允许白名单
+Environment=TERRARIA_PORT=7777
+Environment=MAX_CONN_PER_IP=4
+Environment=NEW_CONN_RATE=10/min
+Environment=NEW_CONN_BURST=10
+Environment=ALLOWLIST_ONLY=0
+
+ExecStart=/opt/terraria/guard/terraria-guard.sh apply
+ExecStop=/opt/terraria/guard/terraria-guard.sh remove
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

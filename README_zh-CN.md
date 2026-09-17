@@ -23,6 +23,8 @@ Terraria 专用服务器及其管理后端的部署文件。
 ├── backup/                    # 世界备份
 ├── control/                   # 运行时 FIFO 和日志
 ├── data/                      # 运行时数据
+├── guard/                      # 连接守卫（防端口扫描）—— 见第 28 节
+├── docs/                       # 分析与运维文档
 ├── Dockerfile                 # Terraria Docker 镜像
 ├── docker-compose.yml         # Docker Compose 配置
 ├── start.sh                   # Terraria 启动脚本
@@ -33,6 +35,8 @@ Terraria 专用服务器及其管理后端的部署文件。
 
 ```text
 api/
+guard/
+docs/
 Dockerfile
 docker-compose.yml
 start.sh
@@ -847,6 +851,70 @@ GitHub
 **游戏数据必须单独备份和迁移。**
 
 因此更换 VPS 时，不需要把整个 `/opt/terraria` 原样复制过去。
+
+---
+
+# 28. 连接守卫（防端口扫描 / 「人数已满」修复）
+
+## 28.1 问题
+
+Terraria 原版 Linux 专用服务端会把**任何一条到达 7777 端口的 TCP 连接**都计入
+`maxplayers` 名额，包括端口扫描器、Censys/Rapid7 探测器和云主机上的批量扫描——
+它们连上就断，而这些名额往往不会归还。于是控制台显示 `No players connected.`，
+新玩家却一律收到 `This server is full right now`，只能重启容器才能恢复。
+
+更严重的是，连接如果没有完成握手就断开，还可能**直接把服务端打崩**：
+
+```text
+Unhandled Exception
+Exception: System.ObjectDisposedException: Cannot access a disposed object.
+Object name: 'System.Net.Sockets.NetworkStream'.
+  at Terraria.Net.Sockets.TcpSocket...IsConnected ()
+  at Terraria.RemoteClient.IsConnected ()
+  at Terraria.Netplay.UpdateConnectedClients ()
+  at Terraria.Netplay.ServerLoop ()
+[ERROR] FATAL UNHANDLED EXCEPTION: ...
+```
+
+密码在这里没有用：密码是在 TCP 连接已经占用名额**之后**才校验的。
+只有在网络层把非游戏连接挡在容器外面才能解决。
+
+完整的日志证据与上游 bug 链接见 `docs/connection-guard.md`。
+
+## 28.2 已部署的内容
+
+| 组件 | 作用 |
+| --- | --- |
+| `guard/terraria-guard.sh` | 在 Docker 的 `DOCKER-USER` 链上加规则：动态封禁集合、白名单、单 IP 并发连接上限（4）、单 IP 新建连接速率上限（10/min）。`apply` / `status` / `remove` 幂等。 |
+| `guard/terraria-watchd.py` | 守护进程：自动封禁扫描类 IP（连上就掉且从未 join、发畸形包），并在「假满员」时用 `save` + `exit` 自动恢复。 |
+| `guard/allow.txt` | 可信玩家 IP（不受限流、不会被封）+ Docker 内部网段 `172.18.0.0/16`。 |
+| `guard/systemd/*.service` | `terraria-guard.service` 开机重新应用规则；`terraria-scan-watcher.service` 常驻守护进程。 |
+| `config/serverconfig.txt` | `maxplayers` 由 `8` 提升到 `255`（缓冲扩大 30 倍）。该文件不纳入 Git。 |
+
+## 28.3 日常操作
+
+```bash
+sudo /opt/terraria/guard/terraria-guard.sh status     # 查看规则与集合
+sudo /opt/terraria/guard/terraria-guard.sh apply      # 修改 allow.txt 后重新加载
+sudo ipset del tg_ban <IP>                            # 手动解封某个 IP
+journalctl -u terraria-scan-watcher -f                # 观察 [strike] / [ban] / [recover]
+```
+
+⚠️ 不要用 `nc` 或 `/dev/tcp` 去试探 7777：不经握手的裸 TCP 连接正是让服务端崩溃的触发器，
+请用真实游戏客户端验证。
+
+玩家登录成功**不会**自动加入 `guard/allow.txt`。成功登录只会在守护进程内部获得一段时间的
+「免封禁」待遇；如需永久放行，请手动编辑 `allow.txt` 并执行一次 `terraria-guard.sh apply`。
+
+## 28.4 回滚
+
+```bash
+sudo systemctl disable --now terraria-scan-watcher.service terraria-guard.service
+sudo /opt/terraria/guard/terraria-guard.sh remove
+# 再把 config/serverconfig.txt 的 maxplayers 改回 8 并重启容器
+```
+
+游戏容器本身没有被改造，回滚后行为与之前完全一致。
 
 只需要：
 
