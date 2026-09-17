@@ -485,8 +485,8 @@ major version. To regenerate the snapshot:
 
 ```bash
 cd api
-python scripts/export_openapi.py          # update api/openapi.json
-python scripts/export_openapi.py --check  # CI: fail if the snapshot is stale
+uv run python scripts/export_openapi.py          # update api/openapi.json
+uv run python scripts/export_openapi.py --check  # CI: fail if the snapshot is stale
 ```
 
 Refactor roadmap and design notes: `docs/api-refactor-plan.md`.

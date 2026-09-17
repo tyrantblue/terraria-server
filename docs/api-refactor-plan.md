@@ -472,7 +472,8 @@ api/
 ├── scripts/export_openapi.py       # 契约快照导出（--check 供 CI）
 ├── tests/                          # 52 个用例 + 假 Terraria + 兼容性基线
 ├── openapi.json                    # 契约快照（提交进仓库）
-└── requirements-dev.txt / pytest.ini
+├── pyproject.toml / uv.lock        # dev 依赖组（pytest/httpx）+ 锁文件
+└── pytest.ini
 ```
 
 原 `app/routers/server.py`（461 行，19 个端点）拆开后，路由层只做 HTTP；

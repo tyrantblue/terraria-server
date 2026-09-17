@@ -21,19 +21,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: "3.12"
+          enable-cache: true
 
-      - name: Install dependencies
-        run: pip install -r requirements-dev.txt
+      - name: Sync dependencies (uv.lock is the source of truth)
+        run: uv sync --frozen
 
       - name: Run tests
-        run: python -m pytest -q
+        run: uv run --frozen pytest -q
 
       # 契约闸门：接口改了但 api/openapi.json 快照没更新 → 直接失败，
       # 避免「代码变了文档没变」。确认改动是有意的就本地跑
-      #   python scripts/export_openapi.py
+      #   uv run python scripts/export_openapi.py
       # 并在 docs/api/CHANGELOG.md 里记一笔。
       - name: Check OpenAPI snapshot
-        run: python scripts/export_openapi.py --check
+        run: uv run --frozen python scripts/export_openapi.py --check

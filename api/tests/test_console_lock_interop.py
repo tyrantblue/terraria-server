@@ -4,7 +4,8 @@
 如果 guard/terraria-watchd.py 的哨兵或锁路径与
 api/app/services/console/channel.py 不一致，这里会失败。
 
-需要整个仓库都在挂载里（见 tests/Dockerfile 的用法说明），否则跳过。
+测试路径按仓库结构解析（api/tests/ → ../../guard/），所以要在仓库里跑
+（`cd api && uv run pytest`）；如果只有 api/ 单独存在则自动跳过。
 """
 
 from __future__ import annotations

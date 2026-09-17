@@ -488,8 +488,8 @@ curl https://terraria-api.tyrantblue.xyz/api/health
 
 ```bash
 cd api
-python scripts/export_openapi.py          # 更新 api/openapi.json
-python scripts/export_openapi.py --check  # CI 用：快照过期就失败
+uv run python scripts/export_openapi.py          # 更新 api/openapi.json
+uv run python scripts/export_openapi.py --check  # CI 用：快照过期就失败
 ```
 
 重构方案与设计说明见 `docs/api-refactor-plan.md`。

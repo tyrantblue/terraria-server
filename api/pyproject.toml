@@ -10,5 +10,13 @@ dependencies = [
     "python-multipart>=0.0.20",
 ]
 
+[dependency-groups]
+# 只用于本地测试与 CI。生产镜像用 `uv sync --no-dev` / `uv run --no-dev`，
+# 不会把 pytest 带进容器。
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
 [tool.uv]
 package = false
