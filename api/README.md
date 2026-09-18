@@ -8,13 +8,15 @@ control FIFO (`control/command.fifo`) and reads its console log (`control/output
 ```
 app/
 ├── main.py        app factory, middleware, unified error handlers, router wiring
-├── core/          settings (paths/timeouts/API version) and domain errors
+├── core/          settings (paths/timeouts/API version), domain errors, secret masking
 ├── schemas/       Pydantic request/response models — the source of the OpenAPI contract
 ├── services/      everything that is not HTTP
 │   ├── console/   FIFO channel (locking + sentinel), log reader, parser, audit log
 │   ├── status.py  cached status collector
 │   ├── metrics.py cgroup/disk/player sampling for GET /api/v1/metrics
 │   ├── world_header.py  .wld header parser (size tier / difficulty / created_at)
+│   ├── notifications.py + notification_settings.py + qq_bot.py
+│   │              event notifications: webhook payloads, env/file config, QQ channel bot
 │   ├── *_service.py, runtime.py
 └── api/           thin routers: paths, status codes, dependency injection only
 ```

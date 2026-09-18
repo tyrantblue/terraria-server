@@ -324,12 +324,62 @@ class DeliveryView(BaseModel):
     error: str | None = None
 
 
+class NotificationQQStatus(BaseModel):
+    """QQ 频道机器人的当前配置（`client_secret` 只回掩码）。"""
+
+    app_id: str
+    client_secret: str
+    client_secret_set: bool
+    channel_id: str
+    sandbox: bool
+    #: 高级字段：留空表示用官方默认域名
+    api_base: str
+    token_url: str
+
+
 class NotificationStatus(BaseModel):
+    """通知配置与最近投递。`enabled` 为 false 时看 `missing` 缺什么。"""
+
     enabled: bool
-    url: str
+    #: auto | discord | slack | feishu | json | qq
+    provider: str
+    #: 实际生效的渠道（provider=auto 时按 URL 猜出来的结果，或 qq）
     format: str
+    #: 只回主机名（webhook URL 本身就是凭据）
+    url: str
+    url_set: bool
     events: list[str] | str
+    #: 配置不完整时缺哪些字段（如 `["url"]` / `["qq.app_id"]`）
+    missing: list[str]
+    #: env = 来自 NOTIFY_* 环境变量；file = 来自 control/notify.json
+    source: str
+    qq: NotificationQQStatus
     deliveries: list[DeliveryView]
+
+
+class NotificationQQUpdate(BaseModel):
+    """QQ 字段的更新；省略 / `null` = 保持不变，`""` = 清空。"""
+
+    app_id: str | None = None
+    #: 传掩码（`••••••`）表示"不改"
+    client_secret: str | None = None
+    channel_id: str | None = None
+    sandbox: bool | None = None
+    api_base: str | None = None
+    token_url: str | None = None
+
+
+class NotificationSettingsUpdate(BaseModel):
+    """更新通知目标。
+
+    **合并语义**：只改带来的字段——省略 / `null` 保持原值，`""` 清空，
+    掩码（`••••••` 或 `https://host/…`）表示"不改"。
+    """
+
+    provider: str | None = None
+    url: str | None = None
+    events: str | None = None
+    qq: NotificationQQUpdate | None = None
 
 
 # ---------------------------------------------------------------- guard

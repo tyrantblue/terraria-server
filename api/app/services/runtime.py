@@ -15,7 +15,8 @@ from app.services.console.audit import AuditLog
 from app.services.guard_client import GuardClient
 from app.services.log_events import LogEventWatcher
 from app.services.metrics import MetricsSampler
-from app.services.notifications import Notifier
+from app.services.notifications import Notifier, config_from_env
+from app.services.notification_settings import NotificationSettings
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
 from app.services.console.log_reader import LogReader
@@ -39,6 +40,7 @@ class Runtime:
     banlist: BanList
     audit: AuditLog
     notifier: Notifier
+    notify_settings: NotificationSettings
     events: LogEventWatcher
     scheduler: Scheduler
     guard: GuardClient
@@ -167,11 +169,12 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         static_ttl=settings.static_ttl,
     )
     operations = OperationRegistry()
-    notifier = Notifier(
-        settings.notify_webhook_url,
-        fmt=settings.notify_format,
-        events=settings.notify_events,
+    # 通知配置：环境变量给默认值，control/notify.json（API 写入）覆盖它
+    notify_settings = NotificationSettings(
+        settings.notify_settings_file,
+        defaults=config_from_env(settings),
     )
+    notifier = Notifier(config=notify_settings.load())
     server_service = ServerService(
         channel,
         status,
@@ -214,6 +217,7 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         banlist=BanList(settings.worlds_dir, settings.config_file),
         audit=AuditLog(settings.control_dir / "audit.log"),
         notifier=notifier,
+        notify_settings=notify_settings,
         events=LogEventWatcher(reader, notifier),
         scheduler=scheduler,
         guard=GuardClient(

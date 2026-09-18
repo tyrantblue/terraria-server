@@ -31,6 +31,70 @@
 
 ---
 
+## [2.2.0] — 2026-09-19
+
+**minor：通知目标可以配置了——飞书 / Discord / Slack / 通用 JSON / QQ 频道机器人。**
+现有字段语义不变（`format` / `events` / `deliveries` 都还在），纯新增。
+
+### Added
+
+* **`PUT /api/v1/notifications/settings`**：在面板/API 里改通知目标，落盘
+  `control/notify.json`，**立刻生效、不用重启容器**。合并语义（面板「读→改→写」安全）：
+
+  | 请求里 | 结果 |
+  | --- | --- |
+  | 字段省略 / `null` | 保持原值 |
+  | `""` | 清空 |
+  | 掩码（`••••••` / `https://host/…`） | 保持原值（掩码不可能是真实凭据） |
+
+* **`DELETE /api/v1/notifications/settings`**：删掉运行时配置，回到 `NOTIFY_*` 环境变量。
+* **`GET /api/v1/notifications` 扩展**：新增 `provider`（配置的渠道）、`source`
+  （`env` / `file`）、`missing`（缺哪些字段，面板直接标出来）、`url_set`、
+  `qq.{app_id,client_secret,client_secret_set,channel_id,sandbox,api_base,token_url}`；
+  `format` 仍是**实际生效**的渠道（`auto` 猜出来的结果或 `qq` / `none`）。
+* **QQ 频道机器人**（`provider=qq`）：官方开放平台链路——
+  `POST https://api.bot.qq.com/app/getAppAccessToken`（`appId` + `clientSecret`）换
+  `access_token`（缓存、临近过期自动换新、失效自动重试一次），
+  再 `POST /channels/{channel_id}/messages`，鉴权头 `Authorization: QQBot <token>`。
+  失败在响应体 `err_code` 里，换 token 失败则藏在 `code` 里（HTTP 仍 200），两者都会解析。
+  `api_base` / `token_url` 可覆盖默认域名（沙箱、自建网关、测试）。
+* **`provider=none`**：明确的「关闭通知」开关——凭据保留，随时可以再打开。
+* 新能力 `notifications.settings`（`capability_since` = `2.2.0`），与
+  `notifications.status` 一起让面板决定「只读」还是「可编辑」。
+* 新环境变量（作为默认值，仍可被文件覆盖）：`NOTIFY_QQ_APP_ID`、
+  `NOTIFY_QQ_CLIENT_SECRET`、`NOTIFY_QQ_CHANNEL_ID`、`NOTIFY_QQ_SANDBOX`、
+  `NOTIFY_QQ_API_BASE`、`NOTIFY_QQ_TOKEN_URL`；`NOTIFY_FORMAT` 新增取值 `qq` / `none`。
+
+### Changed
+
+* 通知配置的**校验更严**：渠道名写错、webhook URL 不是 http(s)、QQ 三件套缺失、
+  事件名拼错，都会 **400** 并带上 `error.details`（`allowed` / `missing` / `unknown`），
+  而不是「保存成功但永远不发」。想关掉就用 `provider=none`。
+* 通知配置从「只能用环境变量」变成「环境变量给默认值 + 文件覆盖」；
+  文件损坏时记 warning 并退回环境变量，API 照样能起。
+* `control/notify.json` 落盘权限设为 `0600`（里面有 webhook URL 与 client_secret）。
+
+### 需要你知道的 QQ 限制（写进了 `v1.md` §9）
+
+1. **主动消息默认每个子频道每天 20 条**，每个频道每天最多 2 个子频道，单频道 1s/5 条
+   ——不建议把 `player_join` / `player_leave` 这类高频事件接到 QQ 上，
+   用 `events` 只留 `log_stalled,schedule_failed,server_error,restart_skipped` 更合适。
+2. 发消息要求机器人**有 websocket 连接到 gateway**（否则 `304018 SESSION_NOT_EXIST`），
+   所以纯 HTTP 推送不保证送达：失败会如实记进 `deliveries`，`POST /notifications/test`
+   会返回可读原因。
+3. `304023` / `304024`（等待人工审核）按成功处理。
+
+### Internal
+
+* 新增 `app/services/qq_bot.py`（QQ 客户端）、`app/services/notification_settings.py`
+  （落盘/合并/校验）、`app/core/masking.py`（`password` 与通知凭据共用的掩码规则）。
+* 测试新增 `test_qq_bot.py`（16 例，用本地假 HTTP 服务验证令牌缓存/失效重试/错误信封）
+  与 `test_notification_settings.py`（落盘、合并、掩码、校验、重置、事件过滤）。
+* `api/openapi.json` 重新导出：`/api/v1/notifications/settings` 与新的
+  `NotificationStatus` / `NotificationSettingsUpdate` schema。
+
+---
+
 ## [2.1.0] — 2026-09-19
 
 **minor：全部是新增字段/能力，现有字段语义不变；外加若干错误码与错误信封的收敛。**

@@ -1101,11 +1101,20 @@ curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # 用游
 
 ## 29.3 事件通知
 
+通知目标支持 **飞书 / Discord / Slack / 通用 JSON（webhook）** 和 **QQ 频道机器人**。
+下面这些环境变量只是**默认值**：在面板（或 API）里改完会写 `control/notify.json`
+覆盖它们，**改完不用重启容器**。
+
 | 环境变量 | 默认 | 含义 |
 | --- | --- | --- |
-| `NOTIFY_WEBHOOK_URL` | 空 | 留空即关闭 |
-| `NOTIFY_FORMAT` | `auto` | `auto`（按 URL 猜）/ `discord` / `slack` / `json` |
+| `NOTIFY_WEBHOOK_URL` | 空 | webhook 地址（飞书/Discord/Slack/自建网关）；留空即关闭 |
+| `NOTIFY_FORMAT` | `auto` | `auto`（按 URL 猜）/ `discord` / `slack` / `feishu` / `json` / `qq` / `none` |
 | `NOTIFY_EVENTS` | 空 | 逗号分隔的白名单，空 = 全部 |
+| `NOTIFY_QQ_APP_ID` | 空 | QQ 频道机器人 AppID（`NOTIFY_FORMAT=qq` 时必填） |
+| `NOTIFY_QQ_CLIENT_SECRET` | 空 | 对应的 ClientSecret |
+| `NOTIFY_QQ_CHANNEL_ID` | 空 | 要推送的子频道 ID |
+| `NOTIFY_QQ_SANDBOX` | `0` | `1` = 走沙箱域名 |
+| `NOTIFY_QQ_API_BASE` / `NOTIFY_QQ_TOKEN_URL` | 空 | 高级：覆盖默认域名（沙箱/自建网关/测试） |
 
 事件：`player_join`、`player_leave`、`player_booted`、`server_up`、`server_error`、
 `backup_done`、`schedule_failed`、`restart_skipped`、`log_stalled`。
@@ -1113,9 +1122,36 @@ curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # 用游
 > 2.0.0 起日志停滞告警的事件名从 `console_stalled` 改成 `log_stalled`；
 > 如果你的 `NOTIFY_EVENTS` 里写死了旧名字，记得一起改。
 
+**QQ 频道机器人的两个硬限制**（官方文档口径，写进了 `docs/api/v1.md` §9）：
+
+* 主动消息默认**每个子频道每天 20 条**、每个频道每天最多 2 个子频道、单频道 1s/5 条
+  ——别把 `player_join`/`player_leave` 这类高频事件接到 QQ 上，建议
+  `NOTIFY_EVENTS=log_stalled,schedule_failed,server_error,restart_skipped`。
+* 发消息要求机器人**保持 gateway（websocket）连接**，否则返回 `304018`；
+  纯 HTTP 推送不保证送达，失败原因会记在 `deliveries` 里。
+
 ```bash
+# 看当前配置（URL/密钥只回掩码）+ 最近投递
 curl localhost:8080/api/v1/notifications
+
+# 换成飞书
+curl -X PUT localhost:8080/api/v1/notifications/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"feishu","url":"https://open.feishu.cn/open-apis/bot/v2/hook/xxxx",
+       "events":"log_stalled,schedule_failed"}'
+
+# 换成 QQ 频道机器人
+curl -X PUT localhost:8080/api/v1/notifications/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"qq","events":"log_stalled,schedule_failed",
+       "qq":{"app_id":"102xxxxx","client_secret":"真实密钥","channel_id":"1234567"}}'
+
+# 验证（同步发一条）
 curl -X POST localhost:8080/api/v1/notifications/test
+
+# 关掉（凭据保留）/ 回到环境变量默认值
+curl -X PUT    localhost:8080/api/v1/notifications/settings -d '{"provider":"none"}' -H 'Content-Type: application/json'
+curl -X DELETE localhost:8080/api/v1/notifications/settings
 ```
 
 ## 29.4 日志时间戳与轮转

@@ -1001,7 +1001,175 @@
         "title": "MetricsResponse",
         "type": "object"
       },
+      "NotificationQQStatus": {
+        "description": "QQ 频道机器人的当前配置（`client_secret` 只回掩码）。",
+        "properties": {
+          "api_base": {
+            "title": "Api Base",
+            "type": "string"
+          },
+          "app_id": {
+            "title": "App Id",
+            "type": "string"
+          },
+          "channel_id": {
+            "title": "Channel Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "title": "Client Secret",
+            "type": "string"
+          },
+          "client_secret_set": {
+            "title": "Client Secret Set",
+            "type": "boolean"
+          },
+          "sandbox": {
+            "title": "Sandbox",
+            "type": "boolean"
+          },
+          "token_url": {
+            "title": "Token Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "app_id",
+          "client_secret",
+          "client_secret_set",
+          "channel_id",
+          "sandbox",
+          "api_base",
+          "token_url"
+        ],
+        "title": "NotificationQQStatus",
+        "type": "object"
+      },
+      "NotificationQQUpdate": {
+        "description": "QQ 字段的更新；省略 / `null` = 保持不变，`\"\"` = 清空。",
+        "properties": {
+          "api_base": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Base"
+          },
+          "app_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "App Id"
+          },
+          "channel_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Channel Id"
+          },
+          "client_secret": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Secret"
+          },
+          "sandbox": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sandbox"
+          },
+          "token_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Token Url"
+          }
+        },
+        "title": "NotificationQQUpdate",
+        "type": "object"
+      },
+      "NotificationSettingsUpdate": {
+        "description": "更新通知目标。\n\n**合并语义**：只改带来的字段——省略 / `null` 保持原值，`\"\"` 清空，\n掩码（`••••••` 或 `https://host/…`）表示\"不改\"。",
+        "properties": {
+          "events": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Events"
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider"
+          },
+          "qq": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotificationQQUpdate"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "title": "NotificationSettingsUpdate",
+        "type": "object"
+      },
       "NotificationStatus": {
+        "description": "通知配置与最近投递。`enabled` 为 false 时看 `missing` 缺什么。",
         "properties": {
           "deliveries": {
             "items": {
@@ -1032,16 +1200,43 @@
             "title": "Format",
             "type": "string"
           },
+          "missing": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Missing",
+            "type": "array"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "qq": {
+            "$ref": "#/components/schemas/NotificationQQStatus"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
           "url": {
             "title": "Url",
             "type": "string"
+          },
+          "url_set": {
+            "title": "Url Set",
+            "type": "boolean"
           }
         },
         "required": [
           "enabled",
-          "url",
+          "provider",
           "format",
+          "url",
+          "url_set",
           "events",
+          "missing",
+          "source",
+          "qq",
           "deliveries"
         ],
         "title": "NotificationStatus",
@@ -1825,7 +2020,7 @@
   },
   "info": {
     "title": "Terraria Server API",
-    "version": "2.1.0"
+    "version": "2.2.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2492,6 +2687,7 @@
     },
     "/api/v1/notifications": {
       "get": {
+        "description": "当前生效的通知配置 + 最近投递记录（敏感字段已掩码）。",
         "operationId": "get_notifications_api_v1_notifications_get",
         "responses": {
           "200": {
@@ -2511,9 +2707,71 @@
         ]
       }
     },
+    "/api/v1/notifications/settings": {
+      "delete": {
+        "description": "删掉运行时配置，回到 `NOTIFY_*` 环境变量的默认值。",
+        "operationId": "reset_notification_settings_api_v1_notifications_settings_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Reset Notification Settings",
+        "tags": [
+          "v1:notifications"
+        ]
+      },
+      "put": {
+        "description": "改通知目标并立即生效（落盘 `control/notify.json`）。\n\n* `provider`：`auto` | `feishu` | `discord` | `slack` | `json` | `qq`；\n* webhook 类渠道需要 `url`；`qq` 需要 `qq.app_id` + `qq.client_secret` + `qq.channel_id`；\n* `events` 是逗号分隔白名单（空 = 全部），事件名写错会 **400** 而不是静默过滤；\n* 只改带来的字段：省略/`null` 保持原值，`\"\"` 清空，掩码表示\"不改\"。",
+        "operationId": "update_notification_settings_api_v1_notifications_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NotificationSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationStatus"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Notification Settings",
+        "tags": [
+          "v1:notifications"
+        ]
+      }
+    },
     "/api/v1/notifications/test": {
       "post": {
-        "description": "同步发一条测试消息，配置完 webhook 可以立刻验证。",
+        "description": "同步发一条测试消息，配置完可以立刻验证（失败原因会写在 `error` 里）。",
         "operationId": "test_notification_api_v1_notifications_test_post",
         "responses": {
           "200": {

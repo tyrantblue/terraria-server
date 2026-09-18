@@ -42,7 +42,8 @@ def _env_bool(name: str, default: bool) -> bool:
 #: 2.0.1：审计 `?tail=N` 的内存兜底顺序、并发上传的 `.part` 命名（HTTP 契约不变）。
 #: 2.1.0：issue #9–#18 的集中处理——新增结构化文案字段与能力清单，
 #:        修正错误码/错误信封，并补上写操作限流、客户端版本门槛与可选的 API token。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.1.0")
+#: 2.2.0：通知目标可配置（飞书 / Discord / Slack / 通用 JSON / QQ 频道机器人）。
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.2.0")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
@@ -109,13 +110,21 @@ class Settings:
     #: 定时任务用的时区（容器默认 UTC，这里显式指定，避免"凌晨 5 点"变成中午）
     schedule_timezone: str = os.environ.get("SCHEDULE_TZ", "Asia/Shanghai")
 
-    # -- 事件通知（webhook） ---------------------------------------------
-    #: 留空即关闭
+    # -- 事件通知（webhook / QQ 频道机器人） --------------------------------
+    #: 留空即关闭（provider=qq 时不需要它）
     notify_webhook_url: str = os.environ.get("NOTIFY_WEBHOOK_URL", "")
-    #: auto | discord | slack | json
+    #: auto | discord | slack | feishu | json | qq
     notify_format: str = os.environ.get("NOTIFY_FORMAT", "auto")
     #: 逗号分隔的事件白名单；空 = 全部
     notify_events: str = os.environ.get("NOTIFY_EVENTS", "")
+    # QQ 频道机器人（provider=qq 时前三个必填，在开放平台管理端拿）
+    notify_qq_app_id: str = os.environ.get("NOTIFY_QQ_APP_ID", "")
+    notify_qq_client_secret: str = os.environ.get("NOTIFY_QQ_CLIENT_SECRET", "")
+    notify_qq_channel_id: str = os.environ.get("NOTIFY_QQ_CHANNEL_ID", "")
+    notify_qq_sandbox: bool = _env_bool("NOTIFY_QQ_SANDBOX", False)
+    #: 高级：覆盖默认域名（QQ 调整域名、或走自建网关时用）
+    notify_qq_api_base: str = os.environ.get("NOTIFY_QQ_API_BASE", "")
+    notify_qq_token_url: str = os.environ.get("NOTIFY_QQ_TOKEN_URL", "")
 
     # -- 上传世界 --------------------------------------------------------
     #: 单个 .wld 的大小上限（字节，默认 500MB）。超限返回 413，不落盘。
@@ -150,6 +159,11 @@ class Settings:
     @property
     def fifo(self) -> Path:
         return self.control_dir / "command.fifo"
+
+    @property
+    def notify_settings_file(self) -> Path:
+        """运行时通知配置（API 写入，覆盖 NOTIFY_* 环境变量）。"""
+        return self.control_dir / "notify.json"
 
     @property
     def log_file(self) -> Path:

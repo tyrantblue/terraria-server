@@ -68,10 +68,17 @@ services:
       METRICS_RETENTION_POINTS: "1440"  # 1 分钟粒度下的 24 小时
       # ---- 上传世界的单文件上限（字节，默认 500MB；超限 413，磁盘不足 507）----
       TERRARIA_WORLD_UPLOAD_MAX_BYTES: "524288000"
-      # ---- 事件通知（webhook）；URL 放在 .env 里（不进 Git），留空即关闭 ----
+      # ---- 事件通知（webhook / QQ 频道机器人）----
+      # 这些是**默认值**：面板里的 PUT /api/v1/notifications/settings 会写
+      # control/notify.json 覆盖它们（改完不用重启容器）。
       NOTIFY_WEBHOOK_URL: "${NOTIFY_WEBHOOK_URL:-}"
-      NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json
+      NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json | qq | none
       NOTIFY_EVENTS: "${NOTIFY_EVENTS:-}"       # 逗号分隔；空 = 全部
+      # QQ 频道机器人（NOTIFY_FORMAT=qq 时前三项必填）
+      NOTIFY_QQ_APP_ID: "${NOTIFY_QQ_APP_ID:-}"
+      NOTIFY_QQ_CLIENT_SECRET: "${NOTIFY_QQ_CLIENT_SECRET:-}"
+      NOTIFY_QQ_CHANNEL_ID: "${NOTIFY_QQ_CHANNEL_ID:-}"
+      NOTIFY_QQ_SANDBOX: "${NOTIFY_QQ_SANDBOX:-0}"
       # ---- 安全加固（issue #17）----
       # 写操作共享 token：留空 = 关闭（边缘已有 Access/VPN 时保持关闭）
       TERRARIA_API_TOKEN: "${TERRARIA_API_TOKEN:-}"

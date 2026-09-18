@@ -45,7 +45,8 @@ WS 回放带真实 offset、守卫契约必填、世界元数据、审计落盘�
    * 做法：`start.sh` 里给 `tee` 前加时间戳前缀 + 落一份 `/etc/logrotate.d/terraria`。
      注意：加前缀要同步改 `api/app/services/console/parser.py` 的正则与
      `classify_line`（日志格式变更属于接口行为变化，要走 CHANGELOG）。
-4. **事件通知** ✅（已实现：`NOTIFY_WEBHOOK_URL`，Discord/Slack/JSON）
+4. **事件通知** ✅（已实现：飞书 / Discord / Slack / 通用 JSON / **QQ 频道机器人**，
+   目标可在面板里改，见 `PUT /api/v1/notifications/settings`）
    * 玩家上线/下线、服务端崩溃、被扫描封禁、自动恢复（假满员）——这些现在只在
      `docker compose logs terraria-guard` 里，没人盯着就不知道。
    * 最省事：一个通用 webhook（Discord / Telegram / 企业微信），

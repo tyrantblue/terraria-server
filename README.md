@@ -1089,11 +1089,21 @@ copy in `backup/pre-restore-<timestamp>/`. Restoring an inactive world just copi
 
 ## 29.3 Notifications
 
+Notification targets support **Feishu / Discord / Slack / generic JSON (webhooks)** and the
+**QQ channel bot**. The env vars below are only **defaults**: changing the target from the
+panel (or the API) writes `control/notify.json`, which overrides them — **no container
+restart needed**.
+
 | Env var | Default | Meaning |
 | --- | --- | --- |
-| `NOTIFY_WEBHOOK_URL` | empty | empty disables notifications |
-| `NOTIFY_FORMAT` | `auto` | `auto` (guess from URL) / `discord` / `slack` / `json` |
+| `NOTIFY_WEBHOOK_URL` | empty | webhook URL (Feishu/Discord/Slack/your own gateway); empty = off |
+| `NOTIFY_FORMAT` | `auto` | `auto` (guess from URL) / `discord` / `slack` / `feishu` / `json` / `qq` / `none` |
 | `NOTIFY_EVENTS` | empty | comma separated allow-list, empty = all |
+| `NOTIFY_QQ_APP_ID` | empty | QQ channel-bot AppID (required when `NOTIFY_FORMAT=qq`) |
+| `NOTIFY_QQ_CLIENT_SECRET` | empty | matching ClientSecret |
+| `NOTIFY_QQ_CHANNEL_ID` | empty | sub-channel to push into |
+| `NOTIFY_QQ_SANDBOX` | `0` | `1` = use the sandbox domain |
+| `NOTIFY_QQ_API_BASE` / `NOTIFY_QQ_TOKEN_URL` | empty | advanced: override the default domains |
 
 Events: `player_join`, `player_leave`, `player_booted`, `server_up`, `server_error`,
 `backup_done`, `schedule_failed`, `restart_skipped`, `log_stalled`.
@@ -1101,9 +1111,37 @@ Events: `player_join`, `player_leave`, `player_booted`, `server_up`, `server_err
 > 2.0.0 renamed the log-stall event from `console_stalled` to `log_stalled`; update
 > `NOTIFY_EVENTS` if you allow-listed the old name.
 
+**Two hard QQ limits** (per the official docs, also in `docs/api/v1.md` §9):
+
+* Proactive messages are capped at **20 per sub-channel per day** (and 2 sub-channels per
+  guild per day, 5 messages/second) — do not wire `player_join`/`player_leave` into QQ;
+  prefer `NOTIFY_EVENTS=log_stalled,schedule_failed,server_error,restart_skipped`.
+* Sending requires the bot to keep a **gateway (websocket) connection**; otherwise the
+  platform answers `304018`. Plain HTTP pushes are therefore best-effort, and the failure
+  reason is recorded in `deliveries`.
+
 ```bash
+# current config (URL/secrets masked) + recent deliveries
 curl localhost:8080/api/v1/notifications
+
+# switch to Feishu
+curl -X PUT localhost:8080/api/v1/notifications/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"feishu","url":"https://open.feishu.cn/open-apis/bot/v2/hook/xxxx",
+       "events":"log_stalled,schedule_failed"}'
+
+# switch to the QQ channel bot
+curl -X PUT localhost:8080/api/v1/notifications/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"provider":"qq","events":"log_stalled,schedule_failed",
+       "qq":{"app_id":"102xxxxx","client_secret":"real-secret","channel_id":"1234567"}}'
+
+# verify (sends one message synchronously)
 curl -X POST localhost:8080/api/v1/notifications/test
+
+# turn off (credentials kept) / fall back to the env defaults
+curl -X PUT    localhost:8080/api/v1/notifications/settings -H 'Content-Type: application/json' -d '{"provider":"none"}'
+curl -X DELETE localhost:8080/api/v1/notifications/settings
 ```
 
 ## 29.4 Log timestamps and rotation

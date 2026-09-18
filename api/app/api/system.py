@@ -40,6 +40,7 @@ CAPABILITIES = [
     "scheduler.jobs",
     "backups.list",
     "notifications.status",
+    "notifications.settings",
     "meta.handshake",
 ]
 
@@ -65,6 +66,8 @@ CAPABILITY_SINCE: dict[str, str] = {
     "scheduler.jobs": "2.1.0",
     "backups.list": "2.1.0",
     "notifications.status": "2.1.0",
+    # 2.2.0：通知目标可以在面板/API 里改（不再只靠 NOTIFY_* 环境变量）
+    "notifications.settings": "2.2.0",
 }
 
 router = APIRouter(tags=["system"])
