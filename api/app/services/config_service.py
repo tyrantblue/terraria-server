@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 from app.core.errors import BadRequest
@@ -48,6 +49,32 @@ _INT_RANGES = {
 
 _TEXT_KEYS = {"worldname", "password", "motd", "seed", "language", "world"}
 
+#: 回显时必须掩码的敏感键（见 issue #6）：面板只需要知道「改不改」，
+#: 不需要知道「当前值是什么」——明文回显等于把进服密码送给任何能访问 API 的人。
+SECRET_KEYS = {"password"}
+
+#: 掩码占位符。前端看到它就知道「已设置但不可读」；
+#: 它同时也是**禁止回写**的哨兵（见 validate），避免 GET 的结果被原样 PUT 回去。
+SECRET_MASK = "••••••"
+
+
+def secret_is_set(values: Mapping[str, object], key: str) -> bool:
+    """该敏感键是否已设置（空字符串 = 没设密码）。"""
+    return bool(str(values.get(key) or "").strip())
+
+
+def mask_secrets(values: Mapping[str, object]) -> dict[str, str]:
+    """把已设置的敏感键替换成掩码；未设置的保持原样（空字符串）。
+
+    掩码只用于**回显**，写入路径永远拿到的是客户端提交的真实值
+    （validate() 会拒绝掩码，防止把占位符当成新密码写进 serverconfig.txt）。
+    """
+    masked = {str(key): str(value) for key, value in values.items()}
+    for key in SECRET_KEYS:
+        if key in masked and secret_is_set(masked, key):
+            masked[key] = SECRET_MASK
+    return masked
+
 #: maxplayers 低于这个值时提示：原版会把扫描连接也算进名额，
 #: 8 个槽位很容易被「假满员」占满（见 docs/connection-guard.md）
 LOW_MAX_PLAYERS = 64
@@ -76,6 +103,14 @@ def validate(values: dict[str, object]) -> dict[str, str]:
             continue
 
         text = str(raw).replace("\r", "").replace("\n", " ").strip()
+        if key in SECRET_KEYS and text == SECRET_MASK:
+            # GET /api/v1/config 回显的就是掩码；如果前端把 values 原样 PUT 回来，
+            # 掩码会变成真正的新密码。这里明确拒绝，并告诉客户端正确做法。
+            raise BadRequest(
+                f"{key} 收到的是掩码不是真实值：不要回显后原样提交。"
+                "不修改就省略该键（或留空不发送）。",
+                details={"key": key, "mask": SECRET_MASK},
+            )
         if key in _TEXT_KEYS:
             if not text:
                 raise BadRequest(f"{key} 不能为空")

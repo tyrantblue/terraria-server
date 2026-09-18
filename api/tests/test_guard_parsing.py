@@ -39,8 +39,8 @@ def test_line_regexes_accept_both_formats(daemon, prefix) -> None:
 
 @pytest.mark.parametrize("prefix", ["", TS, ": ", TS + ": "])
 def test_player_line_accepts_both_formats(daemon, prefix) -> None:
-    match = daemon.RE_PLAYER_LINE.match(f"{prefix}CTQ (121.33.239.89:44176)")
-    assert match and match.group("name") == "CTQ" and match.group("ip") == "121.33.239.89"
+    match = daemon.RE_PLAYER_LINE.match(f"{prefix}CTQ (198.51.100.30:44176)")
+    assert match and match.group("name") == "CTQ" and match.group("ip") == "198.51.100.30"
 
 
 def test_connect_then_drop_still_produces_a_strike(daemon, tmp_path) -> None:

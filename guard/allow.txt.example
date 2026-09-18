@@ -1,0 +1,33 @@
+# terraria-guard 白名单（示例文件）
+#
+# 用法：复制成 allow.txt 再按需修改——**allow.txt 不进 Git**，因为里面是真实玩家 IP。
+#
+#     cp guard/allow.txt.example guard/allow.txt
+#
+# 命中的来源 IP 会被放行：不做并发/速率限制，也不会被自动封禁。
+# 支持单个 IP 和 CIDR（例如 192.0.2.0/24）。
+#
+# 另有“自动学习”的白名单在 learned_allow.txt：
+#   terraria-watchd.py 会把成功登录、且在线满 LEARN_DWELL 秒（默认 60s）的
+#   玩家 IP 写进去，有效期 LEARN_TTL（默认 7 天）。该文件由守护进程维护，
+#   不要手工编辑；要临时禁用自动学习就在 service 里设 LEARN_ALLOW=0。
+#   退出白名单 = 删除 learned_allow.txt 里对应行 + `ipset del tg_allow <IP>`。
+#
+# 下面几行只是格式示例（RFC 5737 的文档用网段，抄了没有意义）。
+# 真实地址请自己填：家用宽带 IP 会变，改完不需要重启服务 —— watchd 每 60s
+# 重新读取本文件，但 iptables 的 tg_allow 集合需要在改完后执行一次：
+#     sudo /opt/terraria/guard/terraria-guard.sh apply
+#
+# 玩家        地址                说明
+# alice       203.0.113.10
+# bob         203.0.113.11        和 alice 同一出口也可以直接写 CIDR
+# carol       198.51.100.20
+# 服主自测    192.0.2.7           你自己的出口 IP（curl ifconfig.me）
+
+# Docker 内部网段：本机/容器互连（docker-proxy、面板容器）绝不能被封禁。
+# 注意这条只影响 watchd 的封禁判断；DOCKER-USER 规则本来就不会看到本机流量。
+172.18.0.0/16
+
+203.0.113.10
+203.0.113.11
+198.51.100.20

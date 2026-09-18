@@ -24,7 +24,7 @@ class FakeGuard(threading.Thread):
         self.state_file = state_file
         self.command_file = command_file
         self.commands: list[dict] = []
-        self.allow: list[dict] = [{"ip": "45.195.19.200", "source": "static", "expires_at": None}]
+        self.allow: list[dict] = [{"ip": "203.0.113.10", "source": "static", "expires_at": None}]
         self.banned: list[dict] = [{"ip": "203.0.113.9", "expires_at": time.time() + 600}]
         self.results: dict[str, dict] = {}
         self._stop = threading.Event()
@@ -107,11 +107,38 @@ def test_state_without_guard_is_available_false(rt) -> None:
     assert body["banned"] == []
 
 
+def test_state_without_guard_returns_full_shape(rt) -> None:
+    """issue #8：守卫不在时也必须返回**完整**结构，客户端不用写 `?? []` / `?? 0`。"""
+    body = __import__("app.api.v1.guard", fromlist=["x"])._guard_state(rt, allow_unavailable=True)
+    assert set(body) == {
+        "available", "stale", "age", "updated_at", "port",
+        "allowlist_only", "allow", "banned", "counters",
+    }
+    assert body["allow"] == []
+    assert body["counters"] == {
+        "bans_total": 0, "commands_total": 0, "learned_total": 0, "degraded_console": 0,
+    }
+
+
+def test_guard_contract_marks_every_field_required() -> None:
+    """契约（OpenAPI）也要表达同一件事：GuardState 的字段没有「可能缺失」。"""
+    from app.main import create_app
+
+    schemas = create_app().openapi()["components"]["schemas"]
+    assert set(schemas["GuardState"]["required"]) == {
+        "available", "stale", "age", "updated_at", "port",
+        "allowlist_only", "allow", "banned", "counters",
+    }
+    assert set(schemas["GuardCounters"]["required"]) == {
+        "bans_total", "commands_total", "learned_total", "degraded_console",
+    }
+
+
 def test_state_is_read_from_the_guard(client, guard) -> None:
     body = client.get("/api/v1/guard").json()
     assert body["available"] is True and body["stale"] is False
     assert body["port"] == 7777
-    assert body["allow"][0]["ip"] == "45.195.19.200"
+    assert body["allow"][0]["ip"] == "203.0.113.10"
     assert body["banned"][0]["ip"] == "203.0.113.9"
     assert body["counters"]["bans_total"] == 1
 
@@ -129,10 +156,10 @@ def test_ban_and_unban_round_trip(client, guard) -> None:
 
 
 def test_allow_and_disallow(client, guard) -> None:
-    assert client.post("/api/v1/guard/allow", json={"ip": "61.171.204.128"}).status_code == 200
-    assert any(item["ip"] == "61.171.204.128" for item in client.get("/api/v1/guard").json()["allow"])
-    assert client.delete("/api/v1/guard/allow/61.171.204.128").status_code == 200
-    assert not any(item["ip"] == "61.171.204.128" for item in client.get("/api/v1/guard").json()["allow"])
+    assert client.post("/api/v1/guard/allow", json={"ip": "192.0.2.7"}).status_code == 200
+    assert any(item["ip"] == "192.0.2.7" for item in client.get("/api/v1/guard").json()["allow"])
+    assert client.delete("/api/v1/guard/allow/192.0.2.7").status_code == 200
+    assert not any(item["ip"] == "192.0.2.7" for item in client.get("/api/v1/guard").json()["allow"])
 
 
 def test_reload(client, guard) -> None:

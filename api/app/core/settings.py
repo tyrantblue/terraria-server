@@ -38,14 +38,18 @@ def _env_bool(name: str, default: bool) -> bool:
 
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.4.2")
+#: 2.0.0：删除旧 `/api/*` 资源路由，并把 GET 配置里的明文密码改成掩码。
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.0.0")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
 LOG_TIMEZONE = os.environ.get("TERRARIA_LOG_TZ", os.environ.get("TZ", "Asia/Shanghai"))
 
 #: 前端构建时对应的 API 版本；后端比它高太多时前端应提示用户刷新面板。
-MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.0.0")
+#: 2.0.0 起旧 `/api/*` 已删除，只有迁完 v1 的面板（1.4.0+）能正常工作，
+#: 所以这里从 1.0.0 提到 1.4.0：更旧的面板会在握手上收到明确的升级提示，
+#: 而不是运行到一半遇到 404。
+MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.4.0")
 
 
 @dataclass(frozen=True)
@@ -88,6 +92,8 @@ class Settings:
     schedule_console_check_seconds: int = _env_int("SCHEDULE_CONSOLE_CHECK_SECONDS", 60)
     #: 停滞告警的冷却时间（秒），避免每分钟都发通知
     console_stall_cooldown: float = _env_float("CONSOLE_STALL_COOLDOWN", 1800.0)
+    #: 服务端能读到版本、但日志超过这么多秒没有新内容 → 判定「日志停更」（issue #2）
+    log_stall_seconds: float = _env_float("LOG_STALL_SECONDS", 120.0)
     #: 每天几点定时重启（"05:00"；空 = 关闭）
     schedule_restart_at: str = os.environ.get("SCHEDULE_RESTART_AT", "")
     #: 有人在线时是否跳过定时重启
@@ -107,9 +113,17 @@ class Settings:
     #: 逗号分隔的事件白名单；空 = 全部
     notify_events: str = os.environ.get("NOTIFY_EVENTS", "")
 
-    #: /api/server/console 默认与最大返回行数
-    console_tail_default: int = _env_int("TERRARIA_CONSOLE_TAIL", 50)
-    console_tail_max: int = _env_int("TERRARIA_CONSOLE_TAIL_MAX", 1000)
+    # -- 上传世界 --------------------------------------------------------
+    #: 单个 .wld 的大小上限（字节，默认 500MB）。超限返回 413，不落盘。
+    world_upload_max_bytes: int = _env_int(
+        "TERRARIA_WORLD_UPLOAD_MAX_BYTES", 500 * 1024 * 1024
+    )
+
+    # -- 资源采样（issue #2） --------------------------------------------
+    #: 采样间隔（秒，0 = 关闭采样）
+    metrics_interval_seconds: float = _env_float("METRICS_INTERVAL_SECONDS", 60.0)
+    #: 内存里保留多少个采样点（默认 1440 = 1 分钟粒度下的 24 小时）
+    metrics_retention_points: int = _env_int("METRICS_RETENTION_POINTS", 1440)
 
     @property
     def fifo(self) -> Path:

@@ -22,7 +22,7 @@
 | 游戏服务端 | Terraria Dedicated Server v1.4.5.8（Ubuntu 24.04 容器，`/terraria-server`） |
 | 管理后端 | FastAPI（容器 `terraria-api`，`0.0.0.0:8080`） |
 | 世界 | `/opt/terraria/worlds/gogogo.wld`（worldname=WSD） |
-| 端口 | `7777/tcp` + `7777/udp` 对全网发布；`8080/tcp` 由 `DOCKER-USER` 只允许 `66.63.177.204` |
+| 端口 | `7777/tcp` + `7777/udp` 对全网发布；`8080/tcp` 由 `DOCKER-USER` 只允许 `192.0.2.8` |
 | 配置 | `maxplayers=8`、`password=******`、`difficulty=1` |
 | 控制通道 | `control/command.fifo`（start.sh 用 fd3 以读写方式常开）+ `control/output.log`（`tee -a` 追加） |
 
@@ -53,10 +53,10 @@
 ```
 : No players connected.                                     <- playing 显示 0 人
 : 147.182.247.70:41432 was booted: This server is full right now, please try again later.
-223.160.219.173:18753 was booted: This server is full right now, please try again later.
-223.160.219.173:18754 was booted: This server is full right now, please try again later.
-223.160.219.173:18755 was booted: This server is full right now, please try again later.
-223.160.219.173:18756 was booted: This server is full right now, please try again later.
+192.0.2.50:18753 was booted: This server is full right now, please try again later.
+192.0.2.50:18754 was booted: This server is full right now, please try again later.
+192.0.2.50:18755 was booted: This server is full right now, please try again later.
+192.0.2.50:18756 was booted: This server is full right now, please try again later.
 ```
 
 **0 人在线却说“服务器已满”** → 槽位被看不见的连接占住了。
@@ -81,13 +81,13 @@
 
 | 玩家 | IP | 备注 |
 | --- | --- | --- |
-| ユノの犬 | `45.195.19.200`、`45.195.138.146` | |
-| C | `113.194.127.204` | 中国电信 |
-| CTQ、柳如烟 | `121.33.239.89` | 电信广东，两人同一出口 IP |
-| X | `223.160.218.2`、`223.160.218.141` | 中国移动 |
-| test | `61.171.204.128` | 电信上海（疑似服主自测） |
+| ユノの犬 | `203.0.113.10`、`203.0.113.11` | |
+| C | `198.51.100.20` | 中国电信 |
+| CTQ、柳如烟 | `198.51.100.30` | 电信广东，两人同一出口 IP |
+| X | `192.0.2.5`、`192.0.2.6` | 中国移动 |
+| test | `192.0.2.7` | 电信上海（疑似服主自测） |
 
-⚠️ 注意 `223.160.219.173` 连续 4 次被 `full` 拒绝——它和 `X` 的 `223.160.218.x` 同属中国移动同一段，
+⚠️ 注意 `192.0.2.50` 连续 4 次被 `full` 拒绝——它和 `X` 的 `192.0.2.x` 同属中国移动同一段，
 **这是玩家反复点“加入”造成的，不是扫描器**。所以“凡是被 full 拒绝的 IP 就封掉”是错的策略；
 真正的判据是“**连上来后短时间内掉线且从未 join**”或“**发畸形包**”。
 
@@ -96,13 +96,17 @@
 1. **日志 65% 是面板自己刷的**：`Terraria Server v1.4.5.8` 出现 **1870 次**。因为 `GET /api/server/status`
    每次都往控制台按顺序发 7 条命令（`version/port/maxplayers/time/seed/motd/playing`），
    每条命令都会打印一段状态行。一次 status ≈ 7 行，1870 次 ≈ 1.3 万行。
+   （**已修**：静态/动态字段分开缓存，见 `api/app/services/status.py`；旧路由本身也已在 2.0.0
+   删除，现在读状态走 `GET /api/v1/server`。）
 2. **日志无时间戳、无轮转**：`start.sh` 直接 `tee -a`，`output.log` 只能无限增长（现 512KB），
    出事后无法定位“几点被占满”。
 3. **`7777/udp` 映射是多余的**：Terraria 1.4 PC 联机只走 TCP；这个映射只多出 4 个 `docker-proxy`
    进程和一份暴露面（社区 compose 示例已把该行注释掉）。
-4. **`password=******` 且 API 无鉴权**：`main.py` 里 CORS `allow_origins=["*"]`，所有 `/api/server/*`
-   无 token；8080 只靠 `DOCKER-USER` 里一条“仅允许 `66.63.177.204`”的规则保护——你的宽带 IP 一变面板就挂，
+4. **`password=******` 且 API 无鉴权**：`main.py` 里 CORS `allow_origins=["*"]`，所有 `/api/v1/*`
+   都没有 token（2.0.0 起旧 `/api/*` 已删除，鉴权问题依旧）；8080 只靠 `DOCKER-USER` 里一条
+   “仅允许 `192.0.2.8`”的规则保护——你的宽带 IP 一变面板就挂，
    而这个 IP 一旦被运营商回收给别人，对方就拿到了服务器完全控制权（含改密码、踢人、换世界）。
+   （**已部分缓解**：`GET /api/v1/config` 与 `/api/v1/server` 不再回显明文密码，见 2.0.0 CHANGELOG。）
 
 ---
 
@@ -253,7 +257,8 @@ ports:
    加了时间戳前缀会把时间戳算进玩家名，必须改成 `re.search`。
 2. **日志轮转**：`/etc/logrotate.d/terraria`（`control/output.log`，`copytruncate`，保留 7 天）。
    `terraria-watchd.py` 已能识别日志被轮转/截断。
-3. **`/api/server/status` 降载**：目前一次请求 = 7 条控制台命令 + 最多 7×2s 的等待。
+3. **`/api/server/status` 降载** ✅（已实现 `StatusCollector` 静态/动态分离缓存；旧路由已在 2.0.0 删除）。
+   当时的分析：一次请求 = 7 条控制台命令 + 最多 7×2s 的等待。
    建议：
    * 加 3~5 秒的服务端 TTL 缓存（`functools.lru_cache` 或简单时间戳缓存），合并面板轮询；
    * `version/port/maxplayers/seed/motd` 从日志/启动横幅解析或缓存一次，只保留 `time` + `playing` 实时查询；

@@ -2,6 +2,9 @@
 
 P0 重构后这里只负责：中间件、统一异常处理、路由注册。
 业务逻辑在 app/services/，数据形状在 app/schemas/。
+
+2.0.0 起旧 `/api/*` 资源路由已删除（见 docs/api/CHANGELOG.md），
+这里只注册 `/api/v1` 与系统级接口（health / meta）。
 """
 
 from __future__ import annotations
@@ -13,16 +16,12 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import console as console_api
-from app.api import server as server_api
 from app.api import system as system_api
-from app.api import world as world_api
 from app.api.v1 import api_v1
-from app.core.deprecations import lookup as lookup_deprecation
 from app.core.errors import AppError
 from app.core.settings import API_VERSION
-from app.core.telemetry import telemetry
 from app.services.runtime import Runtime, get_runtime
+from app.services.world_service import precheck_upload
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,13 +36,18 @@ _HTTP_ERROR_CODES = {
     404: "not_found",
     405: "method_not_allowed",
     409: "conflict",
+    413: "payload_too_large",
     422: "validation_failed",
     429: "too_many_requests",
     500: "internal_error",
     502: "upstream_failed",
     503: "service_unavailable",
     504: "gateway_timeout",
+    507: "insufficient_storage",
 }
+
+#: 上传世界的路径（中间件据此做 Content-Length 预检）
+UPLOAD_PATH = "/api/v1/worlds"
 
 
 def create_app(runtime: Runtime | None = None) -> FastAPI:
@@ -61,12 +65,15 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         rt = resolve_runtime()
         rt.notifier.start()
         rt.events.start()
+        if rt.settings.metrics_interval_seconds > 0:
+            rt.metrics.start()
         if rt.settings.schedule_enabled:
             rt.scheduler.start()
         try:
             yield
         finally:
             rt.scheduler.stop()
+            rt.metrics.stop()
             rt.events.stop()
             rt.notifier.stop()
 
@@ -98,17 +105,40 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         return JSONResponse(status_code=exc.status_code, content=body, headers=exc.headers)
 
     @app.middleware("http")
-    async def deprecation_headers(request: Request, call_next):
-        """给被弃用的旧路由加 Deprecation/Sunset/Link 头，并记录调用量。
+    async def upload_precheck(request: Request, call_next):
+        """上传世界前先用 Content-Length 拦一次：413（超限）/ 507（磁盘不足）。
 
-        纯附加行为：不改变状态码、不改变响应体，旧前端完全无感。
+        必须在路由之前：Starlette 解析 multipart 时会把整个请求体落到临时文件，
+        等路由函数拿到 `UploadFile` 时磁盘已经被写过了。service 层还有同样的检查，
+        用于没有 Content-Length 的 chunked 上传。
+        """
+        if request.method == "POST" and request.url.path == UPLOAD_PATH:
+            try:
+                declared = int(request.headers.get("content-length") or 0)
+            except ValueError:
+                declared = 0
+            if declared > 0:
+                settings = resolve_runtime().settings
+                try:
+                    precheck_upload(
+                        settings.worlds_dir,
+                        declared_size=declared,
+                        max_bytes=settings.world_upload_max_bytes,
+                    )
+                except AppError as exc:
+                    return JSONResponse(status_code=exc.status_code, content=exc.to_body())
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def client_version_header(request: Request, call_next):
+        """回显 `X-Client-Version`，方便面板确认自己连的是哪个后端。
+
+        这个头以前还用于统计被弃用接口的调用量；2.0.0 删掉旧接口后只做回显。
         """
         response = await call_next(request)
-        deprecation = lookup_deprecation(request.url.path)
-        if deprecation is not None:
-            for key, value in deprecation.headers().items():
-                response.headers[key] = value
-            telemetry.record(request.url.path, request.headers.get("X-Client-Version"))
+        client_version = request.headers.get("X-Client-Version")
+        if client_version:
+            response.headers["X-Client-Version"] = client_version
         return response
 
     if runtime is not None:
@@ -117,9 +147,6 @@ def create_app(runtime: Runtime | None = None) -> FastAPI:
         app.dependency_overrides[runtime_dep] = resolve_runtime
 
     app.include_router(system_api.router)
-    app.include_router(server_api.router)
-    app.include_router(world_api.router)
-    app.include_router(console_api.router)
     app.include_router(api_v1)
     return app
 

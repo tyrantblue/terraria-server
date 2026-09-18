@@ -1,7 +1,7 @@
 """通用响应模型。
 
-成功响应保持与旧实现完全一致的字段（含 `success: true`）；
-错误响应见 core/errors.py 与 schemas/error 段落。
+2.0.0 删掉了旧接口专用的 `SuccessResponse` / `CommandResponse`
+（`{"success": true}` 那套包装只剩历史意义，见 docs/api/CHANGELOG.md）。
 """
 
 from __future__ import annotations
@@ -22,14 +22,6 @@ class ErrorResponse(BaseModel):
 
     detail: str
     error: ErrorBody
-
-
-class SuccessResponse(BaseModel):
-    success: bool = True
-
-
-class CommandResponse(SuccessResponse):
-    command: str
 
 
 class HealthResponse(BaseModel):

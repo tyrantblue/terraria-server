@@ -29,6 +29,131 @@
 
 ---
 
+## [2.0.0] — 2026-09-19
+
+**major：删除全部旧 `/api/*` 资源路由，并改掉了两处「读得到明文 / 读到假值」的行为。**
+对应仓库 issue #1–#8 的集中处理，逐条结论见各 issue 的评论。
+
+### 升级须知
+
+* **面板必须是 1.4.0+**（已迁完 `/api/v1`）。`MIN_CLIENT_VERSION` 从 `1.0.0` 提到
+  `1.4.0`：低于它的面板会在 `GET /api/meta` 握手上拿到明确的「必须升级」信号。
+* **`GET /api/v1/config` 不再返回明文密码**（见 Changed）。面板的密码输入框要改成
+  「留空 = 不修改」，不要再用返回值预填。
+* 通知事件 `console_stalled` 改名为 **`log_stalled`**；如果 `NOTIFY_EVENTS` 里写死了
+  旧名字，需要同步改，否则这条告警会被白名单过滤掉。
+
+### Removed
+
+* **旧 `/api/*` 全部删除（现在 404）**：`/api/server/*`（status、players、console、
+  command、playing、version、port、maxplayers、motd、password、say、kick、ban、
+  save、settle、time/*）、`/api/world/*`（list、upload、switch）、`WS /api/server/ws`。
+  迁移对照表从 1.2.0 起就在本文件里，前端 1.4.0 已全量迁完。
+
+  | 旧 | 新 |
+  | --- | --- |
+  | `GET /api/server/status` | `GET /api/v1/server` |
+  | `GET /api/server/players` | `GET /api/v1/players` |
+  | `POST /api/server/command` | `POST /api/v1/console/commands`（白名单 + 审计） |
+  | `GET /api/server/console` / `WS /ws` | `GET /api/v1/console` / `WS /api/v1/console/stream` |
+  | `POST /api/world/{list,upload,switch}` | `GET|POST /api/v1/worlds`、`POST /api/v1/worlds/{file}/activate` |
+
+* `GET /api/meta/usage` 与弃用埋点中间件：它唯一的用途是「用数据判断旧接口还有没有人调」，
+  旧接口删掉后没有意义。`X-Client-Version` 请求头现在只做回显（响应里原样带回）。
+* `{"success": true}` 包装相关的响应模型（`SuccessResponse` / `CommandResponse`）、
+  legacy 契约 golden 快照（`tests/golden/legacy_shapes.json`）与
+  `scripts/live_compat_check.py`（它比对的就是那份 golden）。
+
+### Changed
+
+* **敏感配置不再回显明文**（issue #6）：
+
+  ```jsonc
+  // GET /api/v1/config
+  { "values": { "password": "••••••" }, "password_set": true }
+  // GET /api/v1/server
+  { "config": { "password": "••••••" }, "password_set": true }
+  ```
+
+  未设置密码时是 `""`（不掩码），用 `password_set` 区分。新增能力
+  `config.password_masked`，面板据它决定是否走「留空 = 不修改」的输入法。
+
+  `PUT /api/v1/config` 的 `password` 语义（掩码之后必须写死，别再猜）：
+
+  | 请求里 | 结果 |
+  | --- | --- |
+  | 不带 `password` | 不修改 |
+  | 非空值 | 设为该密码 |
+  | `""` | **400** —— 不允许通过接口清空密码 |
+  | `"••••••"`（把 GET 的结果原样回传） | **400**，`details.key = "password"` |
+
+* `GET /api/v1/server` 新增 `log_stalled` / `log_age`（issue #2），直接反映日志管道健康：
+  心跳哨兵没回显、或「能读到版本但日志超过 `LOG_STALL_SECONDS`（默认 120s）没更新」
+  时为 `true`；重启/切世界期间不会误报。
+* `WS /api/v1/console/stream` 的历史回放帧**带上真实 `offset`**（issue #7），
+  不再恒为 `-1`：回放与实时同语义，前端可以直接拿它做去重键 / React key，无需特殊分支。
+  `offset >= hello.cursor` 的行留给实时循环发送（不重不漏）；`hello` 仍然**最后**发，
+  解析顺序与 1.x 一致。
+* `GET /api/v1/worlds` 与 `GET /api/v1/server` 里的 world 增加 `metadata`（issue #4）：
+  `{format_version, size_tier, width, height, difficulty, created_at}`，解析失败为 `null`
+  （接口不因此失败）。新增能力 `world.metadata`。
+* `GuardState` / `GuardCounters` 的**所有字段都变成必填**（issue #8）：守卫未运行时返回
+  `available: false` + `allow: []` + `banned: []` + 四项全 0 的 `counters`，客户端不用再写
+  `?? []` / `?? 0`。行为与文档（`v1.md` §9.1）已对齐。
+* `GET /api/v1/console/audit` 的条目新增 `result`（控制台回显，最长 500 字符），
+  并支持 `?tail=N`（1..1000，从文件回读；不带参数仍读内存里的最近 200 条）。
+* 上传世界失败时的状态码语义明确化：超限 **413** `payload_too_large`、
+  磁盘余量不足 **507** `insufficient_storage`。
+* 旧 `/api/health` 与 `/api/meta` 保持不变；`deprecations` 字段保留但恒为 `[]`
+  （前端可以不再依赖它）。
+
+### Added
+
+* **`GET /api/v1/metrics?minutes=60`**（issue #2）：CPU%（cgroup v2/v1，按可用核数折算，
+  没配额时按 `cpuset` 核数）、内存用量/上限、磁盘可用/总量、在线人数的时间序列，
+  默认 1 分钟一个点、保留 1440 个点（24 小时），`METRICS_INTERVAL_SECONDS=0` 可关闭。
+  新增能力 `server.metrics`。
+* **审计落盘**（issue #3）：`POST /api/v1/console/commands` 的审计追加写到
+  `control/audit.log`（JSON Lines：`{ts, actor, command, result}`），API 重启后仍可回查；
+  失败的命令也会留痕（`result: "failed: ConsoleTimeout"` 之类）。轮转配置加在
+  `ops/logrotate.terraria`（`copytruncate`，保留 12 份）。审计写不进去时只记 warning，
+  不影响控制台命令本身。新增能力 `console.audit.persistent`。
+* **上传世界的三道防线**（issue #3）：`Content-Length` 预检放在中间件里
+  （**必须在 Starlette 把 multipart 落到临时文件之前**）、写入过程累计上限、
+  每写一块检查磁盘余量（至少 2× 已写字节且不低于 64MB）；文件先写
+  `xxx.wld.part` 再 `os.replace` 原子改名，任何中途失败都清理 `.part`。
+  上限由 `TERRARIA_WORLD_UPLOAD_MAX_BYTES`（默认 500MB）控制。
+* 新环境变量：`LOG_STALL_SECONDS`（120）、`METRICS_INTERVAL_SECONDS`（60）、
+  `METRICS_RETENTION_POINTS`（1440）、`TERRARIA_WORLD_UPLOAD_MAX_BYTES`（500MB）。
+* 新能力（`GET /api/meta` 的 `capabilities`）：`world.metadata`、
+  `config.password_masked`、`console.audit.persistent`、`server.log_health`、
+  `server.metrics`。前端用它们做功能开关。
+* **仓库脱敏**（issue #1）：`guard/allow.txt` 不再纳入 Git（`.gitignore` + 只留
+  `guard/allow.txt.example`），文档与测试里的真实玩家/服主 IP 全部换成 RFC 5737
+  文档网段（`192.0.2.x` / `198.51.100.x` / `203.0.113.x`）。迁移时必须单独复制
+  `guard/allow.txt`，README 的迁移章节已补上这一步。
+
+### Fixed
+
+* 通知事件名 `console_stalled` → **`log_stalled`**（issue #2 里建议的名字）。
+* `LogEventWatcher` / `MetricsSampler` 把停止事件命名为 `_stop`，把
+  `threading.Thread._stop()` 覆盖掉了——一旦有人调用 `is_alive()` 或 `join()`
+  就会抛 `TypeError: 'Event' object is not callable`。已改名 `_stopped`，并加了回归测试
+  （`test_thread_can_be_joined`）。
+* `.wld` 头部解析：用文件头里的 section 指针定位 WorldHeader（不硬编码
+  tile-frame-important 位数组的长度），`.NET DateTime.ToBinary()` 的 Kind 位按
+  Utc/Local 分别处理，超出合理年份就丢弃而不是给个错值。
+
+### Internal
+
+* 测试 166 → **204**：删除 legacy 契约测试（旧接口没了），新增 issue #2/#3/#4/#6/#7/#8
+  的用例（`test_metrics.py`、`test_upload_and_audit.py`、`test_world_metadata.py`，
+  以及 v1 契约与 WS 回放的补充）。
+* `api/openapi.json` 重新导出：旧路径消失，新增 `/api/v1/metrics`、`GuardState` 必填字段、
+  `WorldMetadataView` 等 schema。CI 的 `export_openapi.py --check` 是这道闸门。
+
+---
+
 ## [1.4.2] — 2026-09-18
 
 HTTP 契约**没有变化**（patch）。加了一个主动探活，用来发现本轮真踩到的那类事故。
@@ -79,7 +204,7 @@ HTTP 契约**没有变化**（patch）。加了一个主动探活，用来发现
   上一条命令的输出是否以换行结束**——实测它可能粘在玩家名那一行上：
 
   ```
-  [2026-09-17 19:12:35] : C (113.194.127.204:12811)
+  [2026-09-17 19:12:35] : C (198.51.100.20:12811)
   [2026-09-17 19:12:35] 1 player connected.
   ```
 

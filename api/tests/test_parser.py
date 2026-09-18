@@ -6,8 +6,8 @@ from app.services.console import parser
 
 #: 真实回显：控制台提示符 ": " 会粘在**第一行输出**上（哪一行取决于上一条命令
 #: 是否以换行结束），所以名字前面可能是 ": "
-PLAYING_WITH_PLAYERS = """: ユノの犬 (45.195.19.200:26557)
-CTQ (121.33.239.89:44176)
+PLAYING_WITH_PLAYERS = """: ユノの犬 (203.0.113.10:26557)
+CTQ (198.51.100.30:44176)
 2 players connected.
 : """
 
@@ -25,10 +25,10 @@ def test_parse_players_two() -> None:
 
 def test_parse_players_strips_console_prompt() -> None:
     """线上真实回显：行首 ": " 是提示符，不是名字的一部分。"""
-    real = "[2026-09-17 19:12:35] : C (113.194.127.204:12811)\n[2026-09-17 19:12:35] 1 player connected."
+    real = "[2026-09-17 19:12:35] : C (198.51.100.20:12811)\n[2026-09-17 19:12:35] 1 player connected."
     assert parser.parse_players(real) == ["C"]
     entries = parser.parse_player_entries(real)
-    assert [(e.name, e.ip, e.port) for e in entries] == [("C", "113.194.127.204", 12811)]
+    assert [(e.name, e.ip, e.port) for e in entries] == [("C", "198.51.100.20", 12811)]
 
 
 def test_normalize_player_line() -> None:
@@ -75,8 +75,8 @@ def test_parsers_tolerate_leading_timestamp() -> None:
 
 
 def test_player_entries_tolerate_leading_timestamp() -> None:
-    entries = parser.parse_player_entries(TS + "CTQ (121.33.239.89:44176)")
-    assert [(e.name, e.ip, e.port) for e in entries] == [("CTQ", "121.33.239.89", 44176)]
+    entries = parser.parse_player_entries(TS + "CTQ (198.51.100.30:44176)")
+    assert [(e.name, e.ip, e.port) for e in entries] == [("CTQ", "198.51.100.30", 44176)]
 
 
 def test_split_timestamp_only_strips_the_timestamp() -> None:

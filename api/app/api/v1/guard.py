@@ -26,6 +26,28 @@ class GuardDown(AppError):
     code = "guard_unavailable"
 
 
+#: 守卫不在（或守卫只写了部分计数器）时使用的完整默认值。
+#: GuardState 的字段全部必填，所以这里必须补齐而不是省略——客户端不该写 `?? 0`。
+_EMPTY_COUNTERS: dict[str, int] = {
+    "bans_total": 0,
+    "commands_total": 0,
+    "learned_total": 0,
+    "degraded_console": 0,
+}
+
+
+def _counters(raw: object) -> dict[str, int]:
+    """把守卫写的计数器官化成完整结构（缺字段/坏值一律按 0 处理）。"""
+    source = raw if isinstance(raw, dict) else {}
+    counters: dict[str, int] = {}
+    for key in _EMPTY_COUNTERS:
+        try:
+            counters[key] = int(source.get(key) or 0)
+        except (TypeError, ValueError):
+            counters[key] = 0
+    return counters
+
+
 def _guard_state(rt: RuntimeDep, *, allow_unavailable: bool = False) -> dict[str, object]:
     try:
         state = rt.guard.state()
@@ -40,7 +62,7 @@ def _guard_state(rt: RuntimeDep, *, allow_unavailable: bool = False) -> dict[str
                 "allowlist_only": False,
                 "allow": [],
                 "banned": [],
-                "counters": {},
+                "counters": dict(_EMPTY_COUNTERS),
             }
         raise GuardDown(str(exc)) from exc
 
@@ -53,7 +75,7 @@ def _guard_state(rt: RuntimeDep, *, allow_unavailable: bool = False) -> dict[str
         "allowlist_only": bool(state.get("allowlist_only")),
         "allow": state.get("allow") or [],
         "banned": state.get("banned") or [],
-        "counters": state.get("counters") or {},
+        "counters": _counters(state.get("counters")),
     }
 
 

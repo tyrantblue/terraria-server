@@ -14,6 +14,10 @@ data/
 guard/learned_allow.txt
 guard/learned_allow.txt.tmp
 
+# 静态白名单里有真实玩家 IP（个人信息）：仓库里只留 allow.txt.example，
+# 真实文件只放在服务器上 —— 迁移时需要单独 scp（见 README「迁移服务器」）。
+guard/allow.txt
+
 # Server secrets / local configuration
 config/serverconfig.txt
 

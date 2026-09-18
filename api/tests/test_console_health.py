@@ -6,10 +6,9 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
-
-import pytest
 
 from app.core.settings import Settings
 from app.services.runtime import _job_result_notifier, build_job_specs, build_runtime
@@ -95,9 +94,58 @@ def test_stall_triggers_a_notification(rt) -> None:
     hook("console", "succeeded", "ok")
     hook("console", "succeeded", "stalled (已告警过，冷却中)")
     hook("console", "succeeded", "unavailable: 无法写入控制 FIFO")
-    assert sent == [("console_stalled", "error")]
+    assert sent == [("log_stalled", "error")]
 
 
 def test_log_age_is_exposed(rt) -> None:
     age = rt.reader.age()
     assert age is not None and age < 60
+
+
+# ---------------------------------------------------------------- 对外暴露（issue #2）
+def test_stall_is_visible_on_server_state(rt, fake_terraria) -> None:
+    """心跳报 stalled 之后，GET /api/v1/server 也要报 log_stalled（不必等下一次探活）。"""
+    assert rt.server.log_health(running=True)[0] is False
+
+    fake_terraria.swallow_output = True
+    assert rt.server.console_heartbeat(timeout=0.5).startswith("stalled:")
+
+    stalled, age = rt.server.log_health(running=True)
+    assert stalled is True
+    assert age is not None
+
+
+def test_recovered_pipeline_clears_the_flag(rt, fake_terraria) -> None:
+    fake_terraria.swallow_output = True
+    rt.server.console_heartbeat(timeout=0.5)
+    assert rt.server.log_health(running=True)[0] is True
+
+    fake_terraria.swallow_output = False
+    assert rt.server.console_heartbeat(timeout=1.0) == "ok"
+    assert rt.server.log_health(running=True)[0] is False
+
+
+def test_silent_log_is_flagged_when_server_is_running(rt) -> None:
+    """服务端能读到版本、日志却很久没动 → 判定日志停更。"""
+    old = time.time() - 600
+    os.utime(rt.settings.log_file, (old, old))
+
+    stalled, age = rt.server.log_health(running=True)
+    assert stalled is True
+    assert age is not None and age > 500
+
+    # 读不到版本（服务端不在运行）时不判定，避免刚启动/停机时误报
+    assert rt.server.log_health(running=False)[0] is False
+
+
+def test_restart_in_flight_suppresses_the_age_rule(rt) -> None:
+    """重启/切世界期间日志本来就会安静，别把正常重启报成停更。"""
+    old = time.time() - 600
+    os.utime(rt.settings.log_file, (old, old))
+
+    release = threading.Event()
+    rt.operations.submit("server.restart", lambda progress: release.wait(5))
+    try:
+        assert rt.server.log_health(running=True)[0] is False
+    finally:
+        release.set()

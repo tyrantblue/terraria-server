@@ -12,7 +12,7 @@ from app.services.status import StatusCollector
 
 def test_repeated_status_calls_scan_new_log_lines(client) -> None:
     for _ in range(5):
-        response = client.get("/api/server/status")
+        response = client.get("/api/v1/server")
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["version"] == "1.4.5.8"

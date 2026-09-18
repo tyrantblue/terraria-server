@@ -10,6 +10,8 @@ import time
 
 import pytest
 
+from app.services import config_service
+
 
 def wait_operation(client, operation_id: str, timeout: float = 10.0) -> dict:
     deadline = time.monotonic() + timeout
@@ -34,10 +36,10 @@ def test_server_state_combines_everything(client) -> None:
 
 
 def test_players_with_ip(client, fake_terraria) -> None:
-    fake_terraria.players = ("ユノの犬 (45.195.19.200:26557)", "CTQ (121.33.239.89:44176)")
+    fake_terraria.players = ("ユノの犬 (203.0.113.10:26557)", "CTQ (198.51.100.30:44176)")
     body = client.get("/api/v1/players").json()
     assert body["online"] == 2
-    assert body["players"][0] == {"name": "ユノの犬", "ip": "45.195.19.200", "port": 26557}
+    assert body["players"][0] == {"name": "ユノの犬", "ip": "203.0.113.10", "port": 26557}
     assert body["players"][1]["name"] == "CTQ"
 
 
@@ -48,7 +50,7 @@ def test_kick_unknown_player_is_404(client) -> None:
 
 
 def test_kick_online_player(client, fake_terraria) -> None:
-    fake_terraria.players = ("CTQ (121.33.239.89:44176)",)
+    fake_terraria.players = ("CTQ (198.51.100.30:44176)",)
     assert client.post("/api/v1/players/CTQ/kick").status_code == 200
 
 
@@ -179,6 +181,115 @@ def test_low_maxplayers_needs_confirmation(client) -> None:
     assert ok.status_code == 200
 
 
+# ---------------------------------------------------------------- 敏感配置（#6）
+def _set_password_line(settings, password: str) -> None:
+    settings.config_file.write_text(
+        settings.config_file.read_text(encoding="utf-8") + f"password={password}\n",
+        encoding="utf-8",
+    )
+
+
+def test_config_get_never_echoes_plaintext_password(client, settings) -> None:
+    """issue #6：GET 不该把 serverconfig.txt 里的明文密码回给任何客户端。"""
+    _set_password_line(settings, "123456")
+
+    body = client.get("/api/v1/config").json()
+    assert body["values"]["password"] == config_service.SECRET_MASK
+    assert body["password_set"] is True
+
+    server = client.get("/api/v1/server").json()
+    assert server["config"]["password"] == config_service.SECRET_MASK
+    assert server["password_set"] is True
+
+    assert "123456" not in client.get("/api/v1/config").text
+    assert "123456" not in client.get("/api/v1/server").text
+
+
+def test_config_get_reports_missing_and_empty_password(client, settings) -> None:
+    """未设置与设置为空都要能区分出来，且都不掩码（没什么可藏的）。"""
+    body = client.get("/api/v1/config").json()
+    assert body["password_set"] is False
+    assert body["values"].get("password", "") == ""
+
+    _set_password_line(settings, "")
+    body = client.get("/api/v1/config").json()
+    assert body["password_set"] is False
+    assert body["values"]["password"] == ""
+
+
+def test_config_put_password_works_and_stays_write_only(client, settings) -> None:
+    response = client.put("/api/v1/config", json={"values": {"password": "s3cret-pw"}})
+    assert response.status_code == 200
+    assert response.json()["persisted"] == ["password"]
+    assert "password=s3cret-pw" in settings.config_file.read_text(encoding="utf-8")
+
+    # 写完立刻读回：仍然只有掩码
+    body = client.get("/api/v1/config").json()
+    assert body["values"]["password"] == config_service.SECRET_MASK
+
+
+def test_config_put_rejects_roundtripped_mask(client) -> None:
+    """前端把 GET 的 values 原样 PUT 回来时，掩码不能被当成新密码。"""
+    response = client.put(
+        "/api/v1/config", json={"values": {"password": config_service.SECRET_MASK}}
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["details"]["key"] == "password"
+
+
+def test_config_put_empty_password_is_rejected(client) -> None:
+    """空字符串 = 把服务器密码清掉；这里刻意不允许（见 v1.md §5 的三态语义）。"""
+    response = client.put("/api/v1/config", json={"values": {"password": ""}})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "bad_request"
+
+
+# ---------------------------------------------------------------- 控制台流（#7）
+def test_console_stream_replay_uses_real_offsets(client, fake_terraria) -> None:
+    """issue #7：回放帧的 offset 必须是真实行偏移，不能恒为 -1。"""
+    fake_terraria.inject_line("Alice has joined.")
+
+    with client.websocket_connect("/api/v1/console/stream") as websocket:
+        frames = []
+        while True:
+            frame = websocket.receive_json()
+            frames.append(frame)
+            if frame["type"] == "hello":
+                break
+
+    assert frames[-1]["type"] == "hello"
+    assert frames[-1]["cursor"] > 0
+
+    lines = [frame for frame in frames if frame["type"] == "console.line"]
+    assert lines, "回放应当至少包含启动横幅"
+    offsets = [frame["offset"] for frame in lines]
+    assert all(offset >= 0 for offset in offsets), offsets
+    assert len(set(offsets)) == len(offsets), "回放行的 offset 必须唯一（去重键）"
+    assert offsets == sorted(offsets)
+    assert max(offsets) < frames[-1]["cursor"]
+    assert any("Alice has joined." in frame["text"] for frame in lines)
+
+
+def test_console_stream_matches_rest_offsets(client, fake_terraria) -> None:
+    """同一条日志行，REST 与 WS 给出的 offset 必须一致。"""
+    fake_terraria.inject_line("Bob has left.")
+    rest = {
+        line["offset"]: line["text"]
+        for line in client.get("/api/v1/console", params={"tail": 20}).json()["lines"]
+    }
+
+    with client.websocket_connect("/api/v1/console/stream") as websocket:
+        replay = {}
+        while True:
+            frame = websocket.receive_json()
+            if frame["type"] == "hello":
+                break
+            replay[frame["offset"]] = frame["text"]
+
+    for offset, text in replay.items():
+        assert rest.get(offset) == text
+
+
 # ---------------------------------------------------------------- worlds
 def test_worlds_list_and_backup_dir(client) -> None:
     body = client.get("/api/v1/worlds").json()
@@ -239,30 +350,28 @@ def test_exclusive_operations_do_not_overlap(client, fake_terraria) -> None:
     wait_operation(client, first.json()["operation_id"])
 
 
-# ---------------------------------------------------------------- 弃用与埋点
+# ---------------------------------------------------------------- 握手与旧接口
+def test_meta_handshake(client) -> None:
+    body = client.get("/api/meta").json()
+    assert body["api_version"] == "2.0.0"
+    assert body["min_client_version"] == "1.4.0"
+    assert body["server_version"] == "1.4.5.8"
+    assert "world.switch" in body["capabilities"]
+    # 旧接口删完后没有弃用项了；字段保留但恒为空
+    assert body["deprecations"] == []
+    assert body["links"]["openapi"] == "/openapi.json"
+
+
 @pytest.mark.parametrize(
-    "path,replacement",
+    "path",
     [
-        ("/api/server/status", "/api/v1/server"),
-        ("/api/server/players", "/api/v1/players"),
-        ("/api/world/list", "/api/v1/worlds"),
+        "/api/server/status",
+        "/api/server/players",
+        "/api/server/console",
+        "/api/world/list",
+        "/api/meta/usage",
     ],
 )
-def test_legacy_routes_advertise_deprecation(client, path, replacement) -> None:
-    response = client.get(path)
-    assert response.status_code == 200
-    assert response.headers["Deprecation"] == "true"
-    assert "Sunset" in response.headers
-    assert replacement in response.headers["Link"]
-
-
-def test_v1_routes_are_not_marked_deprecated(client) -> None:
-    assert "Deprecation" not in client.get("/api/v1/server").headers
-
-
-def test_usage_is_recorded_for_deprecated_routes(client) -> None:
-    client.get("/api/server/status", headers={"X-Client-Version": "panel-1.0.0"})
-    usage = client.get("/api/meta/usage").json()["usage"]
-    entry = next(item for item in usage if item["path"] == "/api/server/status")
-    assert entry["count"] >= 1
-    assert entry["client_versions"].get("panel-1.0.0", 0) >= 1
+def test_legacy_routes_are_gone(client, path) -> None:
+    """2.0.0：旧 `/api/*` 返回 404，而不是继续带着弃用头工作。"""
+    assert client.get(path).status_code == 404

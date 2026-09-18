@@ -19,7 +19,7 @@ from app.schemas.v1 import (
     CommandResponse,
     ConsoleResponse,
 )
-from app.services.console.audit import guard_command
+from app.services.console.audit import TAIL_MAX, guard_command
 from app.services.console.parser import classify_line, is_fence_line, split_line
 from app.services.runtime import Runtime
 
@@ -32,6 +32,23 @@ INITIAL_LINES = 100
 def _view(offset: int, text: str) -> dict[str, object]:
     stamp, _body = split_line(text)
     return {"offset": offset, "ts": stamp, "kind": classify_line(text), "text": text}
+
+
+def _line_event(offset: int, text: str) -> dict[str, object]:
+    """WS 帧：与 REST 的 ConsoleLine 同形，另加 `type`。
+
+    回放（历史）与实时使用**同一个真实 `offset`**（见 issue #7）：
+    REST 侧的 offset 是稳定的行标识/增量游标，前端拿它做去重键与 React key
+    才不会把 N 行折叠成 1 行。
+    """
+    stamp, _body = split_line(text)
+    return {
+        "type": "console.line",
+        "offset": offset,
+        "ts": stamp,
+        "kind": classify_line(text),
+        "text": text,
+    }
 
 
 @router.get("/console", response_model=ConsoleResponse)
@@ -64,34 +81,47 @@ def console(
 @router.post("/console/commands", response_model=CommandResponse)
 def run_command(request: CommandRequest, rt: RuntimeDep) -> dict[str, object]:
     command = guard_command(request.command)
-    output = rt.channel.run(command)
-    rt.audit.record(command, actor="api")
+    try:
+        output = rt.channel.run(command)
+    except Exception as exc:  # noqa: BLE001 - 失败的尝试同样要留痕
+        rt.audit.record(command, actor="api", result=f"failed: {type(exc).__name__}")
+        raise
+    rt.audit.record(command, actor="api", result=output)
     rt.status.invalidate()
     return {"ok": True, "command": command, "output": output}
 
 
 @router.get("/console/audit", response_model=AuditResponse)
-def audit(rt: RuntimeDep) -> dict[str, object]:
-    return {
-        "entries": [
-            {"ts": entry.ts, "command": entry.command, "actor": entry.actor}
-            for entry in rt.audit.entries()
-        ]
-    }
+def audit(
+    rt: RuntimeDep,
+    tail: int | None = Query(default=None, ge=1, le=TAIL_MAX),
+) -> dict[str, object]:
+    """默认返回内存里的最近 200 条；带 `?tail=N` 时从 `control/audit.log` 回读。
+
+    落盘之后 API 重启不再丢失审计（issue #3）。
+    """
+    return {"entries": [entry.as_dict() for entry in rt.audit.entries(tail)]}
 
 
 @router.websocket("/console/stream")
 async def stream(websocket: WebSocket, rt: Runtime = Depends(runtime)) -> None:
+    """先回放最近 INITIAL_LINES 行（带真实 offset），再推 `hello`，然后持续推新行。
+
+    顺序与游标的取法有讲究：
+
+    * `cursor` 在回放**之前**取，回放里 `offset >= cursor` 的行跳过——
+      它们属于「回放期间新增」，留给下面的实时循环发，避免重复也避免丢行；
+    * `hello` 仍然最后发，`hello.cursor` 是权威续传点：前端断线重连时
+      用 REST `?since=hello.cursor` 补洞即可。
+    """
     await websocket.accept()
     reader = rt.reader
     try:
-        for text in reader.tail(INITIAL_LINES):
-            if not is_fence_line(text):
-                await websocket.send_json(
-                    {"type": "console.line", "offset": -1, "ts": split_line(text)[0],
-                     "kind": classify_line(text), "text": text}
-                )
         cursor = reader.size()
+        for offset, text in reader.tail_with_offsets(INITIAL_LINES):
+            if is_fence_line(text) or offset >= cursor:
+                continue
+            await websocket.send_json(_line_event(offset, text))
         await websocket.send_json({"type": "hello", "cursor": cursor})
 
         while True:
@@ -101,10 +131,7 @@ async def stream(websocket: WebSocket, rt: Runtime = Depends(runtime)) -> None:
             for offset, text in lines:
                 if is_fence_line(text):
                     continue
-                await websocket.send_json(
-                    {"type": "console.line", "offset": offset, "ts": split_line(text)[0],
-                     "kind": classify_line(text), "text": text}
-                )
+                await websocket.send_json(_line_event(offset, text))
             await asyncio.sleep(POLL_INTERVAL)
     except WebSocketDisconnect:
         return

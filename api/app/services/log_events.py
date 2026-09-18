@@ -11,7 +11,6 @@ import logging
 import re
 import threading
 import time
-from pathlib import Path
 
 from app.services.console.log_reader import LogReader
 from app.services.console.parser import split_line
@@ -40,21 +39,21 @@ class LogEventWatcher(threading.Thread):
         self.reader = reader
         self.notifier = notifier
         self.interval = interval
-        self._stop = threading.Event()
+        self._stopped = threading.Event()
         self._cursor: int | None = None
         self._last_error = 0.0
 
     def stop(self) -> None:
-        self._stop.set()
+        self._stopped.set()
 
     def run(self) -> None:  # pragma: no cover - 线程体
         self._cursor = self.reader.size()
-        while not self._stop.is_set():
+        while not self._stopped.is_set():
             try:
                 self._tick()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("log-events: %s", exc)
-            self._stop.wait(self.interval)
+            self._stopped.wait(self.interval)
 
     def _tick(self) -> None:
         size = self.reader.size()

@@ -10,3 +10,16 @@
     copytruncate
     su root root
 }
+
+# 控制台命令审计（API 追加写，一行一条 JSON）。同样用 copytruncate：
+# API 每次写入都重新 open(O_APPEND)，截断后会继续追加到新末尾，
+# 只是「上周谁改了什么」这类历史会随轮转被清理（保留 12 份）。
+/opt/terraria/control/audit.log {
+    monthly
+    rotate 12
+    size 5M
+    missingok
+    notifempty
+    copytruncate
+    su root root
+}

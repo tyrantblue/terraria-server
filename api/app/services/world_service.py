@@ -6,27 +6,84 @@
 
 from __future__ import annotations
 
+import os
 import time
 from pathlib import Path
-from typing import AsyncIterator, Protocol
+from typing import Protocol
 
 import hashlib
 import re
 import shutil
 from datetime import datetime
 
-from app.core.errors import BadRequest, Conflict, NotFound, UpstreamFailed
+from app.core.errors import (
+    BadRequest,
+    Conflict,
+    InsufficientStorage,
+    NotFound,
+    PayloadTooLarge,
+    UpstreamFailed,
+)
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
 from app.services.console.log_reader import LogReader
-from app.services.operations import FAILED, SUCCEEDED, Operation, OperationRegistry
+from app.services.operations import Operation, OperationRegistry
 from app.services.status import StatusCollector
+from app.services.world_header import read_world_metadata
 
 SWITCH_TIMEOUT = 30.0
 #: 自动备份目录名（20260917-080632）才会被保留策略清理
 BACKUP_NAME_RE = re.compile(r"^\d{8}-\d{6}$")
 SAVE_GRACE = 1.0
 CHUNK_SIZE = 1024 * 1024
+#: 上传世界时的临时后缀：先写 .part，成功后再原子改名
+PART_SUFFIX = ".part"
+#: 写入世界文件前希望保留的最小余量（字节）
+MIN_FREE_BYTES = 64 * 1024 * 1024
+#: 余量要求：至少 2× 文件大小——Terraria 保存时还会自己写一份 .bak
+REQUIRED_FREE_FACTOR = 2
+
+
+def free_bytes(path: Path) -> int | None:
+    """卷上的可用字节数（os.statvfs）；拿不到就返回 None（不阻塞上传）。"""
+    try:
+        return shutil.disk_usage(str(path)).free
+    except OSError:
+        return None
+
+
+def required_free_bytes(expected: int) -> int:
+    """写入 expected 字节前希望保留的余量。"""
+    return max(MIN_FREE_BYTES, expected * REQUIRED_FREE_FACTOR)
+
+
+def precheck_upload(worlds_dir: Path, *, declared_size: int, max_bytes: int) -> None:
+    """上传前的两个预检：大小上限（413）与磁盘余量（507）。
+
+    必须在**进路由之前**用 Content-Length 做：Starlette 会先把整个 multipart
+    落到临时文件，等路由函数拿到 `UploadFile` 时字节已经写完了，那时再拒
+    只能防住 worlds/，防不住临时目录被写满。service 层仍保留同样的检查，
+    用于没有 Content-Length 的 chunked 上传。
+    """
+    if declared_size > max_bytes:
+        raise PayloadTooLarge(
+            f"世界文件超过上限 {_mb(max_bytes)} MB（本次 {_mb(declared_size)} MB）",
+            details={"limit_bytes": max_bytes, "declared_bytes": declared_size},
+        )
+    free = free_bytes(worlds_dir)
+    if free is None:
+        return
+    needed = required_free_bytes(declared_size)
+    if free < needed:
+        raise InsufficientStorage(
+            f"磁盘余量不足：至少需要 {_mb(needed)} MB，当前可用 {_mb(free)} MB。"
+            "服务端保存世界时还会再写一份 .bak，所以需要 2× 文件大小的余量。",
+            details={"free_bytes": free, "required_bytes": needed},
+        )
+
+
+def _mb(value: int) -> int:
+    return round(value / (1024 * 1024))
 
 
 class AsyncReader(Protocol):
@@ -43,6 +100,7 @@ class WorldService:
         reader: LogReader,
         operations: OperationRegistry,
         backup_dir: Path,
+        max_upload_bytes: int = 500 * 1024 * 1024,
     ) -> None:
         self.worlds_dir = worlds_dir
         self._config = config
@@ -51,6 +109,7 @@ class WorldService:
         self._reader = reader
         self._operations = operations
         self.backup_dir = backup_dir
+        self.max_upload_bytes = max_upload_bytes
 
     # -- 查询 ---------------------------------------------------------
     def active_world_file(self) -> str | None:
@@ -62,6 +121,7 @@ class WorldService:
         worlds: list[dict[str, object]] = []
         for path in sorted(self.worlds_dir.glob("*.wld")):
             stat = path.stat()
+            metadata = read_world_metadata(path)
             worlds.append(
                 {
                     "name": path.stem,
@@ -69,12 +129,30 @@ class WorldService:
                     "size": stat.st_size,
                     "modified_at": stat.st_mtime,
                     "active": path.name == active,
+                    # 头部解析失败就是 null——面板显示"未知"，接口照常 200
+                    "metadata": metadata.as_dict() if metadata else None,
                 }
             )
         return worlds, active
 
     # -- 上传 ---------------------------------------------------------
-    async def upload(self, filename: str | None, stream: AsyncReader) -> tuple[str, str, int]:
+    async def upload(
+        self,
+        filename: str | None,
+        stream: AsyncReader,
+        *,
+        declared_size: int | None = None,
+    ) -> tuple[str, str, int]:
+        """流式接收一个 `.wld`。
+
+        三道防线（issue #3）：
+        1. `Content-Length` 预检（中间件在 spool 之前就做，这里再兜一次）；
+        2. 写入时累计字节数，超过上限立刻 413；
+        3. 每写一块都看一次磁盘余量（至少 2× 已写字节），不足 507。
+
+        文件先写成 `xxx.wld.part`，全部成功后才 `os.replace` 成正式文件：
+        任何中途失败都不会留下半个世界文件。
+        """
         if not filename:
             raise BadRequest("filename is required")
 
@@ -82,18 +160,58 @@ class WorldService:
         if not safe_name.lower().endswith(".wld"):
             raise BadRequest("only .wld files are allowed")
 
+        if declared_size is not None:
+            precheck_upload(
+                self.worlds_dir,
+                declared_size=declared_size,
+                max_bytes=self.max_upload_bytes,
+            )
+
         destination = self.worlds_dir / safe_name
         if destination.exists():
             raise Conflict(f"world already exists: {safe_name}")
 
-        with destination.open("wb") as handle:
-            while True:
-                chunk = await stream.read(CHUNK_SIZE)
-                if not chunk:
-                    break
-                handle.write(chunk)
+        temp = destination.with_name(destination.name + PART_SUFFIX)
+        written = 0
+        try:
+            if declared_size is None:
+                self._require_space(0)
+            with temp.open("wb") as handle:
+                while True:
+                    chunk = await stream.read(CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > self.max_upload_bytes:
+                        raise PayloadTooLarge(
+                            f"世界文件超过上限 {_mb(self.max_upload_bytes)} MB",
+                            details={
+                                "limit_bytes": self.max_upload_bytes,
+                                "received_bytes": written,
+                            },
+                        )
+                    handle.write(chunk)
+                    self._require_space(written)
+            if not written:
+                raise BadRequest("上传内容为空（不是有效的 .wld 文件）")
+            os.replace(temp, destination)
+        except BaseException:
+            temp.unlink(missing_ok=True)
+            raise
 
         return destination.stem, destination.name, destination.stat().st_size
+
+    def _require_space(self, written: int) -> None:
+        """写入过程中的磁盘余量检查：free >= max(64MB, 2×已写)。"""
+        free = free_bytes(self.worlds_dir)
+        if free is None:
+            return
+        needed = required_free_bytes(written)
+        if free < needed:
+            raise InsufficientStorage(
+                f"磁盘余量不足：至少需要 {_mb(needed)} MB，当前可用 {_mb(free)} MB",
+                details={"free_bytes": free, "required_bytes": needed, "written_bytes": written},
+            )
 
     def resolve(self, requested: str) -> str:
         """校验世界文件名，返回文件名。"""
@@ -146,18 +264,6 @@ class WorldService:
         # 4. 等待服务端重新可用
         self._wait_until_up(progress, base=40, span=50)
         return {"world": filename}
-
-    def activate_and_wait(self, requested: str, timeout: float = 90.0) -> str:
-        """旧接口 POST /api/world/switch 用：提交操作并同步等到结束。"""
-        operation = self.activate(requested)
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline and operation.state not in (SUCCEEDED, FAILED):
-            time.sleep(0.25)
-        if operation.state == SUCCEEDED:
-            return str((operation.result or {}).get("world", requested))
-        if operation.state == FAILED:
-            raise UpstreamFailed(operation.error or "world switch failed", status_code=504)
-        raise UpstreamFailed("world switch did not finish in time", status_code=504)
 
     # -- 备份 ---------------------------------------------------------
     def list_backups(self, include_auto: bool = True) -> list[dict[str, object]]:

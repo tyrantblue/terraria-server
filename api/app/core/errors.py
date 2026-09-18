@@ -64,6 +64,20 @@ class Conflict(AppError):
     code = "conflict"
 
 
+class PayloadTooLarge(AppError):
+    """上传超过大小上限（世界文件可能把磁盘写满，见 issue #3）。"""
+
+    status_code = 413
+    code = "payload_too_large"
+
+
+class InsufficientStorage(AppError):
+    """磁盘余量不足，提前拒绝而不是写到一半失败。"""
+
+    status_code = 507
+    code = "insufficient_storage"
+
+
 class Forbidden(AppError):
     status_code = 403
     code = "forbidden"

@@ -4,7 +4,9 @@
 或 min_client_version 与面板构建时预期的不一致，就直接提示用户刷新/更新面板，
 而不是让用户面对一堆 404 或缺失字段。
 
-新增接口，不影响任何旧接口。
+2.0.0（2026-09-19）：旧 `/api/*` 资源路由已删除，因此
+* `GET /api/meta/usage`（弃用调用量统计）一并移除；
+* `deprecations` 字段保留但恒为 `[]`，前端可以不再依赖它。
 """
 
 from __future__ import annotations
@@ -12,16 +14,14 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api.deps import RuntimeDep
-from app.core.deprecations import all_deprecations
-from app.core.telemetry import telemetry
 from app.schemas.common import HealthResponse, MetaLinks, MetaResponse
-from app.schemas.v1 import UsageResponse
 
 CHANGELOG_URL = (
     "https://github.com/tyrantblue/terraria-server/blob/main/docs/api/CHANGELOG.md"
 )
 
-#: 当前后端具备的能力，前端可据此决定是否显示某些 UI
+#: 当前后端具备的能力，前端可据此决定是否显示某些 UI。
+#: 新增能力时同时在这里和 docs/api/v1.md 的 §1 登记。
 CAPABILITIES = [
     "server.status",
     "server.console",
@@ -29,22 +29,15 @@ CAPABILITIES = [
     "world.list",
     "world.upload",
     "world.switch",
+    "world.metadata",
+    "config.password_masked",
+    "console.audit.persistent",
+    "server.log_health",
+    "server.metrics",
     "meta.handshake",
 ]
 
 router = APIRouter(tags=["system"])
-
-
-@router.get("/api/meta/usage", response_model=UsageResponse)
-def meta_usage() -> dict[str, object]:
-    """被弃用接口的调用量：用数据判断「前端已经迁完」再删旧路由。"""
-    return {
-        "note": (
-            "计数在 API 进程内存里，重启即清零；client_versions 来自请求头 "
-            "X-Client-Version（面板应带上自己的构建版本）"
-        ),
-        "usage": telemetry.snapshot(),
-    }
 
 
 @router.get("/api/health", response_model=HealthResponse)
@@ -65,7 +58,7 @@ def meta(rt: RuntimeDep) -> dict[str, object]:
         "min_client_version": rt.settings.min_client_version,
         "server_version": server_version,
         "capabilities": CAPABILITIES,
-        "deprecations": all_deprecations(),
+        "deprecations": [],
         "links": MetaLinks(
             openapi="/openapi.json",
             docs="/docs",

@@ -133,7 +133,7 @@ def test_expired_command_is_rejected(control) -> None:
 def test_publish_state_shape(control) -> None:
     guard, _calls, _allow, tmp = control
     guard.fw.set_members = lambda name: (
-        [{"ip": "45.195.19.200", "expires_at": None}] if name == "tg_allow"
+        [{"ip": "203.0.113.10", "expires_at": None}] if name == "tg_allow"
         else [{"ip": "203.0.113.9", "expires_at": time.time() + 100}]
     )
     guard.publish()

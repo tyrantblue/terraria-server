@@ -14,6 +14,7 @@ from app.services.banlist import BanList
 from app.services.console.audit import AuditLog
 from app.services.guard_client import GuardClient
 from app.services.log_events import LogEventWatcher
+from app.services.metrics import MetricsSampler
 from app.services.notifications import Notifier
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
@@ -41,6 +42,7 @@ class Runtime:
     events: LogEventWatcher
     scheduler: Scheduler
     guard: GuardClient
+    metrics: MetricsSampler
 
 
 def build_job_specs(
@@ -135,7 +137,7 @@ def _job_result_notifier(notifier: Notifier):
             and (detail or "").startswith("stalled:")
         ):
             notifier.notify(
-                "console_stalled", "面板读不到服务端状态：日志管道可能停更",
+                "log_stalled", "面板读不到服务端状态：日志管道可能停更",
                 level="error", detail={"detail": detail or ""},
             )
         elif name == "restart" and status == "skipped":
@@ -177,6 +179,7 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         operations,
         reader,
         stall_cooldown=settings.console_stall_cooldown,
+        log_stall_seconds=settings.log_stall_seconds,
     )
     world_service = WorldService(
         settings.worlds_dir,
@@ -186,11 +189,18 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         reader,
         operations,
         settings.backup_dir,
+        max_upload_bytes=settings.world_upload_max_bytes,
     )
     scheduler = Scheduler(
         build_job_specs(settings, server_service, world_service, notifier),
         timezone=settings.schedule_timezone,
         on_result=_job_result_notifier(notifier),
+    )
+    metrics = MetricsSampler(
+        settings.worlds_dir,
+        players_provider=lambda: len(status.player_entries()),
+        interval=settings.metrics_interval_seconds,
+        retention=settings.metrics_retention_points,
     )
     return Runtime(
         settings=settings,
@@ -202,7 +212,7 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         world=world_service,
         operations=operations,
         banlist=BanList(settings.worlds_dir, settings.config_file),
-        audit=AuditLog(),
+        audit=AuditLog(settings.control_dir / "audit.log"),
         notifier=notifier,
         events=LogEventWatcher(reader, notifier),
         scheduler=scheduler,
@@ -210,6 +220,7 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
             settings.control_dir / "guard-state.json",
             settings.control_dir / "guard-commands.jsonl",
         ),
+        metrics=metrics,
     )
 
 

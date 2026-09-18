@@ -432,10 +432,17 @@ Copy worlds/
     ↓
 Copy serverconfig.txt
     ↓
+Copy guard/allow.txt      ← not tracked by Git (contains real player IPs)
+    ↓
 New Server
     ↓
 docker compose up -d --build
 ```
+
+`guard/allow.txt` is the manually curated player allow-list. The repository only ships
+`guard/allow.txt.example`, so a fresh clone starts with an empty allow-list: copy the real
+file across (or start from the example) before players reconnect, otherwise every incoming
+connection looks like a stranger to the guard.
 
 ---
 
@@ -470,19 +477,20 @@ Expected response:
 
 ### API versions
 
-`/api/v1` is the current surface (resource-oriented, long operations return `202` with an
-`operation_id`, structured console lines, persistent config). The legacy `/api/*` routes
-still work and now advertise `Deprecation`/`Sunset` headers.
+**2.0.0 (2026-09-19) removed the legacy `/api/*` routes.** `/api/v1` is now the only
+surface — the panel (`tyrantblue/terrWeb` 1.4.0) had fully migrated, and the contract
+snapshot shows no legacy paths left. `/api/meta` still reports `min_client_version`
+(now `1.4.0`), so an older panel gets a clear "upgrade me" handshake instead of 404s.
 
 | Document | Contents |
 | --- | --- |
-| `docs/api/v1.md` | **Frontend reference for `/api/v1`** (endpoints, payloads, migration table) |
-| `docs/api/CHANGELOG.md` | Every contract change, with migration examples and Sunset dates |
+| `docs/api/v1.md` | **Frontend reference for `/api/v1`** (endpoints, payloads, examples) |
+| `docs/api/CHANGELOG.md` | Every contract change, with migration examples |
 | `docs/roadmap.md` | Planned features and known gaps |
 
-Contract changes are additive first: old routes keep working while new ones are added, and
-removal only happens in a major version after `GET /api/meta/usage` shows the old routes are
-unused. To regenerate the snapshot:
+Contract changes are additive first: `minor` for new endpoints/fields (the frontend gates
+new UI behind `capabilities`), `major` for removals and changed semantics. To regenerate
+the snapshot:
 
 ```bash
 cd api
@@ -506,36 +514,58 @@ GET  /api/meta          # API version handshake for the frontend
 ## Server
 
 ```text
-GET  /api/server/status
-GET  /api/server/players
-GET  /api/server/console
-
-POST /api/server/command
-POST /api/server/playing
-POST /api/server/version
-POST /api/server/port
-POST /api/server/maxplayers
-POST /api/server/save
-POST /api/server/settle
-POST /api/server/say
-POST /api/server/kick
-POST /api/server/ban
-POST /api/server/motd
-POST /api/server/password
+GET  /api/v1/server              # everything at once + log_stalled / log_age
+POST /api/v1/server/actions      # save | settle
+POST /api/v1/server/restart      # 202 + operation_id
+POST /api/v1/server/time         # dawn | noon | dusk | midnight
+GET  /api/v1/config              # secrets masked: password -> "••••••" + password_set
+PUT  /api/v1/config
+GET  /api/v1/metrics             # CPU / memory / disk / players time series (?minutes=60)
 ```
 
-## World
+## Players, console and audit
 
 ```text
-GET  /api/world/list
-POST /api/world/upload
-POST /api/world/switch
+GET    /api/v1/players
+POST   /api/v1/players/{name}/kick
+POST   /api/v1/players/{name}/ban
+DELETE /api/v1/players/{name}/ban
+GET    /api/v1/bans
+POST   /api/v1/broadcast
+GET    /api/v1/console?tail=200
+GET    /api/v1/console/audit?tail=200   # persisted in control/audit.log
+POST   /api/v1/console/commands         # allow-listed + audited
 ```
 
 ## Console WebSocket
 
 ```text
-wss://terraria-api.tyrantblue.xyz/api/server/ws
+wss://terraria-api.tyrantblue.xyz/api/v1/console/stream
+```
+
+## Worlds and backups
+
+```text
+GET    /api/v1/worlds                    # includes .wld metadata (size tier / difficulty)
+POST   /api/v1/worlds                    # upload (413 over limit, 507 low disk)
+DELETE /api/v1/worlds/{file}
+POST   /api/v1/worlds/{file}/activate    # 202
+POST   /api/v1/worlds/{file}/backup      # 202
+GET    /api/v1/backups
+POST   /api/v1/backups/{name}/restore    # 202
+```
+
+## Operations, scheduler, notifications, guard
+
+```text
+GET  /api/v1/operations/{id}     # 202 long-running operations
+GET  /api/v1/scheduler
+POST /api/v1/scheduler/{name}/run
+GET  /api/v1/notifications
+POST /api/v1/notifications/test
+GET  /api/v1/guard               # allow-list / bans / counters
+POST /api/v1/guard/bans
+POST /api/v1/guard/allow
 ```
 
 ---
@@ -923,7 +953,7 @@ Full analysis, log evidence and upstream bug references: `docs/connection-guard.
 | --- | --- |
 | `guard/terraria-guard.sh` | Rules in Docker's `DOCKER-USER` chain: dynamic ban set, allow-list, per-IP concurrent connection limit (4), per-IP new-connection rate limit (10/min). Idempotent `apply` / `status` / `remove`. |
 | `guard/terraria-watchd.py` | Daemon: auto-bans scan-like IPs (connect-then-drop without ever joining, malformed packets), auto-recovers from the phantom-full state with `save` + `exit`, and auto-whitelists players who log in successfully. |
-| `guard/allow.txt` | Manually curated allow-list: trusted player IPs (exempt from limits and bans) plus `172.18.0.0/16` for Docker-internal traffic. |
+| `guard/allow.txt` | Manually curated allow-list: trusted player IPs (exempt from limits and bans) plus `172.18.0.0/16` for Docker-internal traffic. **Not tracked by Git** — it holds real player IPs, the repository only ships `allow.txt.example`. Copy it separately when migrating (see the migration section). |
 | `guard/learned_allow.txt` | Auto-generated by the daemon: IPs of players who logged in and stayed online. Not tracked by Git. |
 | `guard/Dockerfile` + `guard/docker-entrypoint.sh` | The sidecar image and its entrypoint: apply the rules, run the daemon, remove the rules on `docker compose down`. |
 | `guard/systemd/*.service` | Alternative (non-Docker) deployment: apply the rules at boot and supervise the daemon. Keep these **disabled** while the sidecar runs. |
@@ -1026,7 +1056,8 @@ surfaced under `/api/v1`.
 | `SCHEDULE_BACKUP_HOURS` | `6` | automatic backup interval (`0` = off) |
 | `SCHEDULE_BACKUP_KEEP` | `10` | keep the newest N backups (`pre-restore-*` is never pruned) |
 | `SCHEDULE_CONSOLE_CHECK_SECONDS` | `60` | console heartbeat: probe FIFO→log and alert when the log pipeline stalls (`0` = off) |
-| `CONSOLE_STALL_COOLDOWN` | `1800` | minimum seconds between two `console_stalled` alerts |
+| `CONSOLE_STALL_COOLDOWN` | `1800` | minimum seconds between two `log_stalled` alerts |
+| `LOG_STALL_SECONDS` | `120` | log silent for longer than this (while the version is readable) ⇒ `GET /api/v1/server` reports `log_stalled` |
 | `SCHEDULE_RESTART_AT` | `05:00` | daily restart time, empty = off |
 | `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | skip the restart if players are online |
 | `SCHEDULE_RESTART_WARN_MINUTES` | `5` | broadcast a warning before restarting |
@@ -1061,7 +1092,10 @@ copy in `backup/pre-restore-<timestamp>/`. Restoring an inactive world just copi
 | `NOTIFY_EVENTS` | empty | comma separated allow-list, empty = all |
 
 Events: `player_join`, `player_leave`, `player_booted`, `server_up`, `server_error`,
-`backup_done`, `schedule_failed`, `restart_skipped`, `console_stalled`.
+`backup_done`, `schedule_failed`, `restart_skipped`, `log_stalled`.
+
+> 2.0.0 renamed the log-stall event from `console_stalled` to `log_stalled`; update
+> `NOTIFY_EVENTS` if you allow-listed the old name.
 
 ```bash
 curl localhost:8080/api/v1/notifications
@@ -1082,3 +1116,23 @@ sudo install -m 644 ops/logrotate.terraria /etc/logrotate.d/terraria
 
 The API and the guard both accept log lines **with or without** the timestamp prefix, so
 removing the `awk` stage from `start.sh` is a safe rollback.
+
+The same file also rotates `control/audit.log` (console-command audit, 5M / 12 files,
+also `copytruncate`) — the API re-opens it with `O_APPEND` on every write.
+
+## 29.5 Resource metrics and upload limits
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `METRICS_INTERVAL_SECONDS` | `60` | sampling interval (`0` = off, `/api/v1/metrics` returns an empty list) |
+| `METRICS_RETENTION_POINTS` | `1440` | points kept in memory (1-minute samples = 24 hours) |
+| `TERRARIA_WORLD_UPLOAD_MAX_BYTES` | `524288000` | max size of an uploaded `.wld` (~500MB): 413 over it, 507 when the disk is low |
+
+Samples contain container CPU% (cgroup v2 `cpu.stat`/`cpu.max`, falling back to v1
+`cpuacct`/`memory.*`), memory usage and limit, free/total space on the `worlds/` volume,
+and the online player count. They live in memory only — this is a recent history for the
+panel, not long-term monitoring storage.
+
+```bash
+curl -s 'localhost:8080/api/v1/metrics?minutes=60' | jq '.latest'
+```

@@ -58,18 +58,36 @@ class PlayerCollection(BaseModel):
     players: list[PlayerEntryView]
 
 
+class WorldMetadataView(BaseModel):
+    """从 `.wld` 头部解析出来的元数据（解析失败时整个对象为 `null`）。"""
+
+    format_version: int
+    size_tier: str                       # small | medium | large
+    width: int
+    height: int
+    difficulty: str                      # classic | expert | master | journey
+    created_at: str | None               # ISO-8601（UTC）；拿不到时为 null
+
+
 class WorldRef(BaseModel):
     file: str
     name: str
     size: int
     modified_at: float
     active: bool
+    #: 解析失败/旧格式/损坏文件时为 null，接口不会因此失败
+    metadata: WorldMetadataView | None
 
 
 class ConfigView(BaseModel):
-    """serverconfig.txt 里可编辑的键（world 已归一化成文件名）。"""
+    """serverconfig.txt 里可编辑的键（world 已归一化成文件名）。
+
+    `password` 这类敏感键**不回显明文**：值被替换成掩码（`••••••`），
+    是否已设置用 `password_set` 表达。写入（PUT）语义不变，仍然收明文。
+    """
 
     values: dict[str, str]
+    password_set: bool
     editable_keys: list[str]
     runtime_keys: list[str]
     restart_keys: list[str]
@@ -86,7 +104,35 @@ class ServerState(BaseModel):
     motd: str | None
     players: PlayerCollection
     world: WorldRef | None
+    #: 与 ConfigView.values 同源：敏感键已掩码
     config: dict[str, str]
+    password_set: bool
+    #: 日志管道健康（issue #2）：控制台哨兵没回显，或日志长时间没更新
+    log_stalled: bool
+    #: 日志最后一次写入距今多少秒（文件不存在时为 null）
+    log_age: float | None
+
+
+# ---------------------------------------------------------------- metrics
+class MetricPoint(BaseModel):
+    """一个采样点：容器资源 + 磁盘 + 在线人数。读不到的字段为 null。"""
+
+    ts: float
+    cpu_percent: float | None
+    cpu_cores: float | None
+    memory_bytes: int | None
+    memory_limit_bytes: int | None
+    disk_free_bytes: int | None
+    disk_total_bytes: int | None
+    players_online: int | None
+
+
+class MetricsResponse(BaseModel):
+    interval_seconds: float
+    retention_points: int
+    window_minutes: float
+    latest: MetricPoint | None
+    points: list[MetricPoint]
 
 
 class ActionRequest(BaseModel):
@@ -142,6 +188,8 @@ class AuditEntry(BaseModel):
     ts: float
     command: str
     actor: str
+    #: 控制台回显（截断）；命令失败时形如 "failed: ConsoleTimeout"
+    result: str | None = None
 
 
 class AuditResponse(BaseModel):
@@ -193,20 +241,6 @@ class UploadResponse(BaseModel):
     name: str
     file: str
     size: int
-
-
-# ---------------------------------------------------------------- meta
-class UsageEntry(BaseModel):
-    path: str
-    count: int
-    first_seen: float
-    last_seen: float
-    client_versions: dict[str, int]
-
-
-class UsageResponse(BaseModel):
-    note: str
-    usage: list[UsageEntry]
 
 
 # ---------------------------------------------------------------- scheduler
@@ -272,24 +306,33 @@ class GuardBanEntry(BaseModel):
 
 
 class GuardCounters(BaseModel):
-    bans_total: int = 0
-    commands_total: int = 0
-    learned_total: int = 0
-    degraded_console: int = 0
+    """计数器的**所有**字段都是必填：守卫不在时后端填 0，而不是省略整个对象。
+
+    否则客户端只能防御性地写 `counters?.bans_total ?? 0`（见 issue #8）。
+    """
+
+    bans_total: int
+    commands_total: int
+    learned_total: int
+    degraded_console: int
 
 
 class GuardState(BaseModel):
-    """守卫进程的连接守卫状态（防扫描/白名单/封禁）。"""
+    """守卫进程的连接守卫状态（防扫描/白名单/封禁）。
+
+    守卫未运行时**仍然返回完整结构**（`available: false` + 空数组 + 全 0 计数器），
+    因此这里不设默认值：所有字段都是必填，客户端不需要兜底判断。
+    """
 
     available: bool
-    stale: bool = False
-    age: float = 0.0
-    updated_at: float | None = None
-    port: int | None = None
-    allowlist_only: bool = False
-    allow: list[GuardAllowEntry] = Field(default_factory=list)
-    banned: list[GuardBanEntry] = Field(default_factory=list)
-    counters: GuardCounters = Field(default_factory=GuardCounters)
+    stale: bool
+    age: float
+    updated_at: float | None
+    port: int | None
+    allowlist_only: bool
+    allow: list[GuardAllowEntry]
+    banned: list[GuardBanEntry]
+    counters: GuardCounters
 
 
 class GuardIpRequest(BaseModel):

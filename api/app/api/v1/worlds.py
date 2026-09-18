@@ -33,7 +33,14 @@ def list_worlds(rt: RuntimeDep) -> dict[str, object]:
 
 @router.post("/worlds", response_model=UploadResponse, status_code=status.HTTP_201_CREATED)
 async def upload_world(rt: RuntimeDep, file: UploadFile = File(...)) -> dict[str, object]:
-    name, filename, size = await rt.world.upload(file.filename, file)
+    """上传世界文件。
+
+    大小上限与磁盘余量在中间件里先用 `Content-Length` 拦一次（413 / 507），
+    这里把声明的大小交给 service 再核一遍；文件先写 `.part` 再原子改名。
+    """
+    name, filename, size = await rt.world.upload(
+        file.filename, file, declared_size=file.size
+    )
     return {"name": name, "file": filename, "size": size}
 
 

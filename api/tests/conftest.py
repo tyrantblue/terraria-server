@@ -67,6 +67,8 @@ def settings(tmp_path: Path, fake_terraria: FakeTerraria) -> Settings:
         console_lock_timeout=3.0,
         # 测试里不启动后台调度线程（要测就显式 run_now）
         schedule_enabled=False,
+        # 测试里也不启动资源采样线程（要测就显式 sample() / 单独开）
+        metrics_interval_seconds=0.0,
     )
 
 

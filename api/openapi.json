@@ -28,6 +28,17 @@
             "title": "Command",
             "type": "string"
           },
+          "result": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Result"
+          },
           "ts": {
             "title": "Ts",
             "type": "number"
@@ -167,20 +178,6 @@
         "title": "Body_upload_world_api_v1_worlds_post",
         "type": "object"
       },
-      "Body_upload_world_api_world_upload_post": {
-        "properties": {
-          "file": {
-            "contentMediaType": "application/octet-stream",
-            "title": "File",
-            "type": "string"
-          }
-        },
-        "required": [
-          "file"
-        ],
-        "title": "Body_upload_world_api_world_upload_post",
-        "type": "object"
-      },
       "BroadcastRequest": {
         "properties": {
           "message": {
@@ -205,6 +202,29 @@
           "command"
         ],
         "title": "CommandRequest",
+        "type": "object"
+      },
+      "CommandResponse": {
+        "properties": {
+          "command": {
+            "title": "Command",
+            "type": "string"
+          },
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "output": {
+            "title": "Output",
+            "type": "string"
+          }
+        },
+        "required": [
+          "command",
+          "output"
+        ],
+        "title": "CommandResponse",
         "type": "object"
       },
       "ConfigUpdateRequest": {
@@ -283,7 +303,7 @@
         "type": "object"
       },
       "ConfigView": {
-        "description": "serverconfig.txt 里可编辑的键（world 已归一化成文件名）。",
+        "description": "serverconfig.txt 里可编辑的键（world 已归一化成文件名）。\n\n`password` 这类敏感键**不回显明文**：值被替换成掩码（`••••••`），\n是否已设置用 `password_set` 表达。写入（PUT）语义不变，仍然收明文。",
         "properties": {
           "editable_keys": {
             "items": {
@@ -291,6 +311,10 @@
             },
             "title": "Editable Keys",
             "type": "array"
+          },
+          "password_set": {
+            "title": "Password Set",
+            "type": "boolean"
           },
           "path": {
             "title": "Path",
@@ -320,6 +344,7 @@
         },
         "required": [
           "values",
+          "password_set",
           "editable_keys",
           "runtime_keys",
           "restart_keys",
@@ -360,6 +385,27 @@
           "text"
         ],
         "title": "ConsoleLine",
+        "type": "object"
+      },
+      "ConsoleResponse": {
+        "properties": {
+          "cursor": {
+            "title": "Cursor",
+            "type": "integer"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/ConsoleLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          }
+        },
+        "required": [
+          "lines",
+          "cursor"
+        ],
+        "title": "ConsoleResponse",
         "type": "object"
       },
       "DeliveryView": {
@@ -521,28 +567,31 @@
         "type": "object"
       },
       "GuardCounters": {
+        "description": "计数器的**所有**字段都是必填：守卫不在时后端填 0，而不是省略整个对象。\n\n否则客户端只能防御性地写 `counters?.bans_total ?? 0`（见 issue #8）。",
         "properties": {
           "bans_total": {
-            "default": 0,
             "title": "Bans Total",
             "type": "integer"
           },
           "commands_total": {
-            "default": 0,
             "title": "Commands Total",
             "type": "integer"
           },
           "degraded_console": {
-            "default": 0,
             "title": "Degraded Console",
             "type": "integer"
           },
           "learned_total": {
-            "default": 0,
             "title": "Learned Total",
             "type": "integer"
           }
         },
+        "required": [
+          "bans_total",
+          "commands_total",
+          "learned_total",
+          "degraded_console"
+        ],
         "title": "GuardCounters",
         "type": "object"
       },
@@ -560,10 +609,9 @@
         "type": "object"
       },
       "GuardState": {
-        "description": "守卫进程的连接守卫状态（防扫描/白名单/封禁）。",
+        "description": "守卫进程的连接守卫状态（防扫描/白名单/封禁）。\n\n守卫未运行时**仍然返回完整结构**（`available: false` + 空数组 + 全 0 计数器），\n因此这里不设默认值：所有字段都是必填，客户端不需要兜底判断。",
         "properties": {
           "age": {
-            "default": 0.0,
             "title": "Age",
             "type": "number"
           },
@@ -575,7 +623,6 @@
             "type": "array"
           },
           "allowlist_only": {
-            "default": false,
             "title": "Allowlist Only",
             "type": "boolean"
           },
@@ -605,7 +652,6 @@
             "title": "Port"
           },
           "stale": {
-            "default": false,
             "title": "Stale",
             "type": "boolean"
           },
@@ -622,7 +668,15 @@
           }
         },
         "required": [
-          "available"
+          "available",
+          "stale",
+          "age",
+          "updated_at",
+          "port",
+          "allowlist_only",
+          "allow",
+          "banned",
+          "counters"
         ],
         "title": "GuardState",
         "type": "object"
@@ -697,70 +751,6 @@
         "title": "JobRun",
         "type": "object"
       },
-      "MaxPlayersRequest": {
-        "properties": {
-          "max_players": {
-            "maximum": 255.0,
-            "minimum": 1.0,
-            "title": "Max Players",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "max_players"
-        ],
-        "title": "MaxPlayersRequest",
-        "type": "object"
-      },
-      "MaxPlayersResponse": {
-        "properties": {
-          "max_players": {
-            "title": "Max Players",
-            "type": "integer"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "max_players"
-        ],
-        "title": "MaxPlayersResponse",
-        "type": "object"
-      },
-      "MessageRequest": {
-        "properties": {
-          "message": {
-            "title": "Message",
-            "type": "string"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "title": "MessageRequest",
-        "type": "object"
-      },
-      "MessageResponse": {
-        "properties": {
-          "message": {
-            "title": "Message",
-            "type": "string"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "message"
-        ],
-        "title": "MessageResponse",
-        "type": "object"
-      },
       "MetaLinks": {
         "properties": {
           "changelog": {
@@ -833,35 +823,144 @@
         "title": "MetaResponse",
         "type": "object"
       },
-      "MotdRequest": {
+      "MetricPoint": {
+        "description": "一个采样点：容器资源 + 磁盘 + 在线人数。读不到的字段为 null。",
         "properties": {
-          "motd": {
-            "title": "Motd",
-            "type": "string"
+          "cpu_cores": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Cores"
+          },
+          "cpu_percent": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cpu Percent"
+          },
+          "disk_free_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Free Bytes"
+          },
+          "disk_total_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Disk Total Bytes"
+          },
+          "memory_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Bytes"
+          },
+          "memory_limit_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Limit Bytes"
+          },
+          "players_online": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Players Online"
+          },
+          "ts": {
+            "title": "Ts",
+            "type": "number"
           }
         },
         "required": [
-          "motd"
+          "ts",
+          "cpu_percent",
+          "cpu_cores",
+          "memory_bytes",
+          "memory_limit_bytes",
+          "disk_free_bytes",
+          "disk_total_bytes",
+          "players_online"
         ],
-        "title": "MotdRequest",
+        "title": "MetricPoint",
         "type": "object"
       },
-      "MotdResponse": {
+      "MetricsResponse": {
         "properties": {
-          "motd": {
-            "title": "Motd",
-            "type": "string"
+          "interval_seconds": {
+            "title": "Interval Seconds",
+            "type": "number"
           },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
+          "latest": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MetricPoint"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "points": {
+            "items": {
+              "$ref": "#/components/schemas/MetricPoint"
+            },
+            "title": "Points",
+            "type": "array"
+          },
+          "retention_points": {
+            "title": "Retention Points",
+            "type": "integer"
+          },
+          "window_minutes": {
+            "title": "Window Minutes",
+            "type": "number"
           }
         },
         "required": [
-          "motd"
+          "interval_seconds",
+          "retention_points",
+          "window_minutes",
+          "latest",
+          "points"
         ],
-        "title": "MotdResponse",
+        "title": "MetricsResponse",
         "type": "object"
       },
       "NotificationStatus": {
@@ -1053,19 +1152,6 @@
         "title": "OperationView",
         "type": "object"
       },
-      "PasswordRequest": {
-        "properties": {
-          "password": {
-            "title": "Password",
-            "type": "string"
-          }
-        },
-        "required": [
-          "password"
-        ],
-        "title": "PasswordRequest",
-        "type": "object"
-      },
       "PlayerCollection": {
         "properties": {
           "max": {
@@ -1120,79 +1206,6 @@
           "port"
         ],
         "title": "PlayerEntryView",
-        "type": "object"
-      },
-      "PlayerList": {
-        "properties": {
-          "list": {
-            "items": {
-              "type": "string"
-            },
-            "title": "List",
-            "type": "array"
-          },
-          "online": {
-            "title": "Online",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "online",
-          "list"
-        ],
-        "title": "PlayerList",
-        "type": "object"
-      },
-      "PlayerRequest": {
-        "properties": {
-          "player": {
-            "title": "Player",
-            "type": "string"
-          }
-        },
-        "required": [
-          "player"
-        ],
-        "title": "PlayerRequest",
-        "type": "object"
-      },
-      "PlayerResponse": {
-        "properties": {
-          "player": {
-            "title": "Player",
-            "type": "string"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "player"
-        ],
-        "title": "PlayerResponse",
-        "type": "object"
-      },
-      "PlayersResponse": {
-        "properties": {
-          "online": {
-            "title": "Online",
-            "type": "integer"
-          },
-          "players": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Players",
-            "type": "array"
-          }
-        },
-        "required": [
-          "online",
-          "players"
-        ],
-        "title": "PlayersResponse",
         "type": "object"
       },
       "RestoreRequest": {
@@ -1363,6 +1376,21 @@
             "title": "Config",
             "type": "object"
           },
+          "log_age": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Log Age"
+          },
+          "log_stalled": {
+            "title": "Log Stalled",
+            "type": "boolean"
+          },
           "max_players": {
             "anyOf": [
               {
@@ -1384,6 +1412,10 @@
               }
             ],
             "title": "Motd"
+          },
+          "password_set": {
+            "title": "Password Set",
+            "type": "boolean"
           },
           "players": {
             "$ref": "#/components/schemas/PlayerCollection"
@@ -1457,122 +1489,12 @@
           "motd",
           "players",
           "world",
-          "config"
+          "config",
+          "password_set",
+          "log_stalled",
+          "log_age"
         ],
         "title": "ServerState",
-        "type": "object"
-      },
-      "ServerStatusResponse": {
-        "properties": {
-          "max_players": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Max Players"
-          },
-          "motd": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Motd"
-          },
-          "players": {
-            "$ref": "#/components/schemas/PlayerList"
-          },
-          "port": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Port"
-          },
-          "running": {
-            "title": "Running",
-            "type": "boolean"
-          },
-          "seed": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Seed"
-          },
-          "time": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Time"
-          },
-          "version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Version"
-          }
-        },
-        "required": [
-          "running",
-          "version",
-          "port",
-          "max_players",
-          "time",
-          "seed",
-          "motd",
-          "players"
-        ],
-        "title": "ServerStatusResponse",
-        "type": "object"
-      },
-      "SuccessResponse": {
-        "properties": {
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "title": "SuccessResponse",
-        "type": "object"
-      },
-      "SwitchWorldRequest": {
-        "properties": {
-          "file": {
-            "title": "File",
-            "type": "string"
-          }
-        },
-        "required": [
-          "file"
-        ],
-        "title": "SwitchWorldRequest",
         "type": "object"
       },
       "TimeRequest": {
@@ -1642,63 +1564,6 @@
         "title": "UploadResponse",
         "type": "object"
       },
-      "UsageEntry": {
-        "properties": {
-          "client_versions": {
-            "additionalProperties": {
-              "type": "integer"
-            },
-            "title": "Client Versions",
-            "type": "object"
-          },
-          "count": {
-            "title": "Count",
-            "type": "integer"
-          },
-          "first_seen": {
-            "title": "First Seen",
-            "type": "number"
-          },
-          "last_seen": {
-            "title": "Last Seen",
-            "type": "number"
-          },
-          "path": {
-            "title": "Path",
-            "type": "string"
-          }
-        },
-        "required": [
-          "path",
-          "count",
-          "first_seen",
-          "last_seen",
-          "client_versions"
-        ],
-        "title": "UsageEntry",
-        "type": "object"
-      },
-      "UsageResponse": {
-        "properties": {
-          "note": {
-            "title": "Note",
-            "type": "string"
-          },
-          "usage": {
-            "items": {
-              "$ref": "#/components/schemas/UsageEntry"
-            },
-            "title": "Usage",
-            "type": "array"
-          }
-        },
-        "required": [
-          "note",
-          "usage"
-        ],
-        "title": "UsageResponse",
-        "type": "object"
-      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -1739,202 +1604,7 @@
         "title": "ValidationError",
         "type": "object"
       },
-      "WorldItem": {
-        "properties": {
-          "active": {
-            "title": "Active",
-            "type": "boolean"
-          },
-          "file": {
-            "title": "File",
-            "type": "string"
-          },
-          "modified_at": {
-            "title": "Modified At",
-            "type": "number"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "file",
-          "size",
-          "modified_at",
-          "active"
-        ],
-        "title": "WorldItem",
-        "type": "object"
-      },
-      "WorldRef": {
-        "properties": {
-          "active": {
-            "title": "Active",
-            "type": "boolean"
-          },
-          "file": {
-            "title": "File",
-            "type": "string"
-          },
-          "modified_at": {
-            "title": "Modified At",
-            "type": "number"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "file",
-          "name",
-          "size",
-          "modified_at",
-          "active"
-        ],
-        "title": "WorldRef",
-        "type": "object"
-      },
-      "WorldSwitchResponse": {
-        "properties": {
-          "message": {
-            "title": "Message",
-            "type": "string"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          },
-          "world": {
-            "title": "World",
-            "type": "string"
-          }
-        },
-        "required": [
-          "world",
-          "message"
-        ],
-        "title": "WorldSwitchResponse",
-        "type": "object"
-      },
-      "WorldUploadResponse": {
-        "properties": {
-          "file": {
-            "title": "File",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "size": {
-            "title": "Size",
-            "type": "integer"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "name",
-          "file",
-          "size"
-        ],
-        "title": "WorldUploadResponse",
-        "type": "object"
-      },
-      "app__schemas__common__CommandResponse": {
-        "properties": {
-          "command": {
-            "title": "Command",
-            "type": "string"
-          },
-          "success": {
-            "default": true,
-            "title": "Success",
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "command"
-        ],
-        "title": "CommandResponse",
-        "type": "object"
-      },
-      "app__schemas__server__ConsoleResponse": {
-        "properties": {
-          "lines": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Lines",
-            "type": "array"
-          }
-        },
-        "required": [
-          "lines"
-        ],
-        "title": "ConsoleResponse",
-        "type": "object"
-      },
-      "app__schemas__v1__CommandResponse": {
-        "properties": {
-          "command": {
-            "title": "Command",
-            "type": "string"
-          },
-          "ok": {
-            "default": true,
-            "title": "Ok",
-            "type": "boolean"
-          },
-          "output": {
-            "title": "Output",
-            "type": "string"
-          }
-        },
-        "required": [
-          "command",
-          "output"
-        ],
-        "title": "CommandResponse",
-        "type": "object"
-      },
-      "app__schemas__v1__ConsoleResponse": {
-        "properties": {
-          "cursor": {
-            "title": "Cursor",
-            "type": "integer"
-          },
-          "lines": {
-            "items": {
-              "$ref": "#/components/schemas/ConsoleLine"
-            },
-            "title": "Lines",
-            "type": "array"
-          }
-        },
-        "required": [
-          "lines",
-          "cursor"
-        ],
-        "title": "ConsoleResponse",
-        "type": "object"
-      },
-      "app__schemas__v1__WorldListResponse": {
+      "WorldListResponse": {
         "properties": {
           "active_world": {
             "anyOf": [
@@ -1967,9 +1637,10 @@
         "title": "WorldListResponse",
         "type": "object"
       },
-      "app__schemas__world__WorldListResponse": {
+      "WorldMetadataView": {
+        "description": "从 `.wld` 头部解析出来的元数据（解析失败时整个对象为 `null`）。",
         "properties": {
-          "active_world": {
+          "created_at": {
             "anyOf": [
               {
                 "type": "string"
@@ -1978,28 +1649,89 @@
                 "type": "null"
               }
             ],
-            "title": "Active World"
+            "title": "Created At"
           },
-          "worlds": {
-            "items": {
-              "$ref": "#/components/schemas/WorldItem"
-            },
-            "title": "Worlds",
-            "type": "array"
+          "difficulty": {
+            "title": "Difficulty",
+            "type": "string"
+          },
+          "format_version": {
+            "title": "Format Version",
+            "type": "integer"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "size_tier": {
+            "title": "Size Tier",
+            "type": "string"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
           }
         },
         "required": [
-          "worlds",
-          "active_world"
+          "format_version",
+          "size_tier",
+          "width",
+          "height",
+          "difficulty",
+          "created_at"
         ],
-        "title": "WorldListResponse",
+        "title": "WorldMetadataView",
+        "type": "object"
+      },
+      "WorldRef": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "file": {
+            "title": "File",
+            "type": "string"
+          },
+          "metadata": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WorldMetadataView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "modified_at": {
+            "title": "Modified At",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "file",
+          "name",
+          "size",
+          "modified_at",
+          "active",
+          "metadata"
+        ],
+        "title": "WorldRef",
         "type": "object"
       }
     }
   },
   "info": {
     "title": "Terraria Server API",
-    "version": "1.4.2"
+    "version": "2.0.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2042,567 +1774,6 @@
         "summary": "Meta",
         "tags": [
           "system"
-        ]
-      }
-    },
-    "/api/meta/usage": {
-      "get": {
-        "description": "被弃用接口的调用量：用数据判断「前端已经迁完」再删旧路由。",
-        "operationId": "meta_usage_api_meta_usage_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UsageResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Meta Usage",
-        "tags": [
-          "system"
-        ]
-      }
-    },
-    "/api/server/ban": {
-      "post": {
-        "operationId": "ban_api_server_ban_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlayerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlayerResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Ban",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/command": {
-      "post": {
-        "operationId": "command_api_server_command_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CommandRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Command",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/console": {
-      "get": {
-        "operationId": "console_api_server_console_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__server__ConsoleResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Console",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/kick": {
-      "post": {
-        "operationId": "kick_api_server_kick_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PlayerRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlayerResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Kick",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/maxplayers": {
-      "post": {
-        "operationId": "maxplayers_api_server_maxplayers_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MaxPlayersRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MaxPlayersResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Maxplayers",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/motd": {
-      "post": {
-        "operationId": "motd_api_server_motd_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MotdRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MotdResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Motd",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/password": {
-      "post": {
-        "operationId": "password_api_server_password_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PasswordRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SuccessResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Password",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/players": {
-      "get": {
-        "operationId": "players_api_server_players_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlayersResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Players",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/playing": {
-      "post": {
-        "operationId": "playing_api_server_playing_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Playing",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/port": {
-      "post": {
-        "operationId": "port_api_server_port_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Port",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/save": {
-      "post": {
-        "operationId": "save_api_server_save_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Save",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/say": {
-      "post": {
-        "operationId": "say_api_server_say_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MessageRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MessageResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Say",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/settle": {
-      "post": {
-        "operationId": "settle_api_server_settle_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Settle",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/status": {
-      "get": {
-        "operationId": "status_api_server_status_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ServerStatusResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Status",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/time/dawn": {
-      "post": {
-        "operationId": "dawn_api_server_time_dawn_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Dawn",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/time/dusk": {
-      "post": {
-        "operationId": "dusk_api_server_time_dusk_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Dusk",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/time/midnight": {
-      "post": {
-        "operationId": "midnight_api_server_time_midnight_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Midnight",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/time/noon": {
-      "post": {
-        "operationId": "noon_api_server_time_noon_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Noon",
-        "tags": [
-          "server"
-        ]
-      }
-    },
-    "/api/server/version": {
-      "post": {
-        "operationId": "version_api_server_version_post",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__common__CommandResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Version",
-        "tags": [
-          "server"
         ]
       }
     },
@@ -2771,6 +1942,7 @@
         ]
       },
       "put": {
+        "description": "写配置。\n\n`password` 的三态语义（掩码之后必须明确，见 issue #6）：\n\n* **不带 `password` 键** = 不修改（前端输入框留空时就不要发送这个键）；\n* **带非空值** = 设为该密码；\n* **带空字符串** = 400。这里刻意不允许「清空」——静默清空密码会让服务器\n  直接对公网敞开，需要清空请显式改 `serverconfig.txt` 后重启。",
         "operationId": "update_config_api_v1_config_put",
         "requestBody": {
           "content": {
@@ -2850,7 +2022,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/app__schemas__v1__ConsoleResponse"
+                  "$ref": "#/components/schemas/ConsoleResponse"
                 }
               }
             },
@@ -2875,7 +2047,28 @@
     },
     "/api/v1/console/audit": {
       "get": {
+        "description": "默认返回内存里的最近 200 条；带 `?tail=N` 时从 `control/audit.log` 回读。\n\n落盘之后 API 重启不再丢失审计（issue #3）。",
         "operationId": "audit_api_v1_console_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "tail",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "maximum": 1000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tail"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2886,6 +2079,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "Audit",
@@ -2912,7 +2115,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/app__schemas__v1__CommandResponse"
+                  "$ref": "#/components/schemas/CommandResponse"
                 }
               }
             },
@@ -3144,6 +2347,52 @@
         "summary": "Reload Guard",
         "tags": [
           "v1:guard"
+        ]
+      }
+    },
+    "/api/v1/metrics": {
+      "get": {
+        "description": "返回窗口内的采样点（时间升序）+ 最新一点。\n\n读不到的字段是 `null`（例如非 Linux/cgroup 环境拿不到内存用量），\n前端画曲线时跳过空点即可。API 重启后历史清空——这只是内存里的近期曲线。",
+        "operationId": "metrics_api_v1_metrics_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "minutes",
+            "required": false,
+            "schema": {
+              "default": 60.0,
+              "exclusiveMinimum": 0,
+              "maximum": 1440.0,
+              "title": "Minutes",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MetricsResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Metrics",
+        "tags": [
+          "v1:metrics"
         ]
       }
     },
@@ -3598,7 +2847,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/app__schemas__v1__WorldListResponse"
+                  "$ref": "#/components/schemas/WorldListResponse"
                 }
               }
             },
@@ -3611,6 +2860,7 @@
         ]
       },
       "post": {
+        "description": "上传世界文件。\n\n大小上限与磁盘余量在中间件里先用 `Content-Length` 拦一次（413 / 507），\n这里把声明的大小交给 service 再核一遍；文件先写 `.part` 再原子改名。",
         "operationId": "upload_world_api_v1_worlds_post",
         "requestBody": {
           "content": {
@@ -3773,109 +3023,6 @@
         "summary": "Backup World",
         "tags": [
           "v1:worlds"
-        ]
-      }
-    },
-    "/api/world/list": {
-      "get": {
-        "operationId": "list_worlds_api_world_list_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/app__schemas__world__WorldListResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Worlds",
-        "tags": [
-          "world"
-        ]
-      }
-    },
-    "/api/world/switch": {
-      "post": {
-        "operationId": "switch_world_api_world_switch_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SwitchWorldRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorldSwitchResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Switch World",
-        "tags": [
-          "world"
-        ]
-      }
-    },
-    "/api/world/upload": {
-      "post": {
-        "operationId": "upload_world_api_world_upload_post",
-        "requestBody": {
-          "content": {
-            "multipart/form-data": {
-              "schema": {
-                "$ref": "#/components/schemas/Body_upload_world_api_world_upload_post"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/WorldUploadResponse"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Upload World",
-        "tags": [
-          "world"
         ]
       }
     }

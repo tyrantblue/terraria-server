@@ -396,6 +396,21 @@ grep '^world=' /opt/terraria/config/serverconfig.txt
 world=/worlds/WSD.wld
 ```
 
+### 第四步（续）：复制守卫白名单
+
+`guard/allow.txt`（手工维护的玩家白名单）**也不在 Git 中**——它里面是真实玩家 IP，
+仓库里只保留 `guard/allow.txt.example`。迁移时必须单独复制，否则新机器上的守卫会把
+所有玩家都当成陌生连接：
+
+```bash
+scp root@OLD_SERVER_IP:/opt/terraria/guard/allow.txt /opt/terraria/guard/
+# 或者在新机器上从示例开始手工填写：
+# cp guard/allow.txt.example guard/allow.txt
+```
+
+`guard/learned_allow.txt` 由守护进程自动重建（玩家重新登录后会再学到），
+不复制也没关系，但复制过去可以少一轮“第一次连接被限流”。
+
 ---
 
 ## 第五步：启动新服务器
@@ -474,17 +489,18 @@ curl https://terraria-api.tyrantblue.xyz/api/health
 
 ### 接口版本
 
-`/api/v1` 是当前的接口面（资源导向；长耗时操作返回 `202 + operation_id`；控制台按行
-分类；配置可持久化）。旧的 `/api/*` 仍然可用，并会带 `Deprecation`/`Sunset` 响应头。
+**2.0.0（2026-09-19）删除了旧的 `/api/*` 路由**：面板（`tyrantblue/terrWeb` 1.4.0）
+已全量迁移，契约快照里也不再有任何旧路径。`/api/meta` 仍会返回 `min_client_version`
+（现在是 `1.4.0`），所以旧面板会在握手上拿到明确的「请升级」提示，而不是运行到一半 404。
 
 | 文档 | 内容 |
 | --- | --- |
-| `docs/api/v1.md` | **给前端的 `/api/v1` 参考**（端点、请求响应、迁移对照表） |
-| `docs/api/CHANGELOG.md` | 每次契约变更，带迁移示例与 Sunset 日期 |
+| `docs/api/v1.md` | **给前端的 `/api/v1` 参考**（端点、请求响应、示例） |
+| `docs/api/CHANGELOG.md` | 每次契约变更，带迁移示例 |
 | `docs/roadmap.md` | 后续功能规划与已知缺口 |
 
-变更原则：**先加不删** —— 旧路由继续可用，新路由并存；删除只在大版本做，
-且要先看 `GET /api/meta/usage` 确认旧路由已经没人调用。更新快照与跑测试：
+变更原则：**先加不删** —— 新增用 `minor`（前端用 `capabilities` 判断新 UI 是否可用），
+删除/语义变更用 `major`。更新快照与跑测试：
 
 ```bash
 cd api
@@ -508,36 +524,58 @@ GET  /api/meta          # 给前端做 API 版本握手
 ## 服务器
 
 ```text
-GET  /api/server/status
-GET  /api/server/players
-GET  /api/server/console
-
-POST /api/server/command
-POST /api/server/playing
-POST /api/server/version
-POST /api/server/port
-POST /api/server/maxplayers
-POST /api/server/save
-POST /api/server/settle
-POST /api/server/say
-POST /api/server/kick
-POST /api/server/ban
-POST /api/server/motd
-POST /api/server/password
+GET  /api/v1/server              # 一次拿全 + log_stalled / log_age
+POST /api/v1/server/actions      # save | settle
+POST /api/v1/server/restart      # 202 + operation_id
+POST /api/v1/server/time         # dawn | noon | dusk | midnight
+GET  /api/v1/config              # 敏感键已掩码：password -> "••••••" + password_set
+PUT  /api/v1/config
+GET  /api/v1/metrics             # CPU / 内存 / 磁盘 / 在线人数曲线（?minutes=60）
 ```
 
-## 世界
+## 玩家、控制台与审计
 
 ```text
-GET  /api/world/list
-POST /api/world/upload
-POST /api/world/switch
+GET    /api/v1/players
+POST   /api/v1/players/{name}/kick
+POST   /api/v1/players/{name}/ban
+DELETE /api/v1/players/{name}/ban
+GET    /api/v1/bans
+POST   /api/v1/broadcast
+GET    /api/v1/console?tail=200
+GET    /api/v1/console/audit?tail=200   # 落盘在 control/audit.log
+POST   /api/v1/console/commands         # 白名单 + 审计
 ```
 
 ## 控制台 WebSocket
 
 ```text
-wss://terraria-api.tyrantblue.xyz/api/server/ws
+wss://terraria-api.tyrantblue.xyz/api/v1/console/stream
+```
+
+## 世界与备份
+
+```text
+GET    /api/v1/worlds                    # 带 .wld 元数据（尺寸档位 / 难度）
+POST   /api/v1/worlds                    # 上传（超限 413、余量不足 507）
+DELETE /api/v1/worlds/{file}
+POST   /api/v1/worlds/{file}/activate    # 202
+POST   /api/v1/worlds/{file}/backup      # 202
+GET    /api/v1/backups
+POST   /api/v1/backups/{name}/restore    # 202
+```
+
+## 长任务、定时任务、通知、守卫
+
+```text
+GET  /api/v1/operations/{id}     # 202 长任务进度
+GET  /api/v1/scheduler
+POST /api/v1/scheduler/{name}/run
+GET  /api/v1/notifications
+POST /api/v1/notifications/test
+GET  /api/v1/guard               # 白名单 / 封禁 / 计数器
+POST /api/v1/guard/bans
+POST /api/v1/guard/allow
 ```
 
 ---
@@ -933,7 +971,7 @@ Object name: 'System.Net.Sockets.NetworkStream'.
 | --- | --- |
 | `guard/terraria-guard.sh` | 在 Docker 的 `DOCKER-USER` 链上加规则：动态封禁集合、白名单、单 IP 并发连接上限（4）、单 IP 新建连接速率上限（10/min）。`apply` / `status` / `remove` 幂等。 |
 | `guard/terraria-watchd.py` | 守护进程：自动封禁扫描类 IP（连上就掉且从未 join、发畸形包）、在「假满员」时用 `save` + `exit` 自动恢复，并给成功登录的玩家自动加白名单。 |
-| `guard/allow.txt` | 手工维护的白名单：可信玩家 IP（不受限流、不会被封）+ Docker 内部网段 `172.18.0.0/16`。 |
+| `guard/allow.txt` | 手工维护的白名单：可信玩家 IP（不受限流、不会被封）+ Docker 内部网段 `172.18.0.0/16`。**命令 `add` 会写这个文件，仓库里只保留 `allow.txt.example`，真实文件不进 Git（含真实玩家 IP）——迁移时要单独 `scp`，见「迁移服务器」一节。** |
 | `guard/learned_allow.txt` | 守护进程自动生成：成功登录并在线满时长的玩家 IP。不纳入 Git。 |
 | `guard/Dockerfile` + `guard/docker-entrypoint.sh` | 侧车容器镜像与入口：应用规则 → 运行守护进程 → `docker compose down` 时移除规则。 |
 | `guard/systemd/*.service` | 备用的“非 Docker”部署方式（开机应用规则 + 常驻守护）。侧车在跑时请保持它们 **disabled**。 |
@@ -1030,7 +1068,8 @@ sudo /opt/terraria/guard/terraria-guard.sh remove     # 双保险
 | `SCHEDULE_BACKUP_HOURS` | `6` | 自动备份间隔（`0` = 关闭） |
 | `SCHEDULE_BACKUP_KEEP` | `10` | 只保留最近 N 份（`pre-restore-*` 永不清理） |
 | `SCHEDULE_CONSOLE_CHECK_SECONDS` | `60` | 控制台心跳：探活 FIFO→日志，日志管道停更时告警（`0` = 关闭） |
-| `CONSOLE_STALL_COOLDOWN` | `1800` | 两次 `console_stalled` 告警之间的最小间隔（秒） |
+| `CONSOLE_STALL_COOLDOWN` | `1800` | 两次 `log_stalled` 告警之间的最小间隔（秒） |
+| `LOG_STALL_SECONDS` | `120` | 日志超过这么久没更新（且能读到版本）→ `GET /api/v1/server` 报 `log_stalled` |
 | `SCHEDULE_RESTART_AT` | `05:00` | 每天重启时间，留空则关闭 |
 | `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | 有人在线就跳过重启 |
 | `SCHEDULE_RESTART_WARN_MINUTES` | `5` | 重启前广播提醒 |
@@ -1065,7 +1104,10 @@ curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # 用游
 | `NOTIFY_EVENTS` | 空 | 逗号分隔的白名单，空 = 全部 |
 
 事件：`player_join`、`player_leave`、`player_booted`、`server_up`、`server_error`、
-`backup_done`、`schedule_failed`、`restart_skipped`、`console_stalled`。
+`backup_done`、`schedule_failed`、`restart_skipped`、`log_stalled`。
+
+> 2.0.0 起日志停滞告警的事件名从 `console_stalled` 改成 `log_stalled`；
+> 如果你的 `NOTIFY_EVENTS` 里写死了旧名字，记得一起改。
 
 ```bash
 curl localhost:8080/api/v1/notifications
@@ -1083,4 +1125,23 @@ curl -X POST localhost:8080/api/v1/notifications/test
 sudo install -m 644 ops/logrotate.terraria /etc/logrotate.d/terraria
 ```
 
+同一个文件里还有 `control/audit.log` 的轮转（控制台命令审计，5M/保留 12 份，同样
+`copytruncate`）——API 每次写入都重新 `open(O_APPEND)`，截断后继续追加到新末尾。
+
 API 与守卫都能解析**有/无**时间戳两种格式，所以把 `start.sh` 里的 `awk` 去掉是安全的回滚方式。
+
+## 29.5 资源曲线与上传上限
+
+| 环境变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `METRICS_INTERVAL_SECONDS` | `60` | 资源采样间隔（`0` = 关闭，`/api/v1/metrics` 返回空数组） |
+| `METRICS_RETENTION_POINTS` | `1440` | 内存里保留多少个采样点（1 分钟粒度 = 24 小时） |
+| `TERRARIA_WORLD_UPLOAD_MAX_BYTES` | `524288000` | 上传单个 `.wld` 的上限（约 500MB），超限 413、磁盘不足 507 |
+
+采样内容：容器 CPU%（读 cgroup v2 的 `cpu.stat`/`cpu.max`，v1 回退到 `cpuacct`、
+`memory.*`）、内存用量与上限、`worlds/` 所在卷的可用/总空间、在线人数。
+数据只在内存里，API 重启后从零开始——它用于看近期曲线，不是长期监控存储。
+
+```bash
+curl -s 'localhost:8080/api/v1/metrics?minutes=60' | jq '.latest'
+```

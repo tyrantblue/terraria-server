@@ -61,6 +61,13 @@ services:
       # 控制台心跳：定期发一条命令，发现"日志管道停更"（0 = 关闭）
       SCHEDULE_CONSOLE_CHECK_SECONDS: "60"
       CONSOLE_STALL_COOLDOWN: "1800"
+      # 服务端能读到版本、日志却超过这么久没更新 → /api/v1/server 报 log_stalled
+      LOG_STALL_SECONDS: "120"
+      # ---- 资源采样（GET /api/v1/metrics）----
+      METRICS_INTERVAL_SECONDS: "60"    # 0 = 关闭采样
+      METRICS_RETENTION_POINTS: "1440"  # 1 分钟粒度下的 24 小时
+      # ---- 上传世界的单文件上限（字节，默认 500MB；超限 413，磁盘不足 507）----
+      TERRARIA_WORLD_UPLOAD_MAX_BYTES: "524288000"
       # ---- 事件通知（webhook）；URL 放在 .env 里（不进 Git），留空即关闭 ----
       NOTIFY_WEBHOOK_URL: "${NOTIFY_WEBHOOK_URL:-}"
       NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json

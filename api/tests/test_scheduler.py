@@ -135,12 +135,12 @@ def test_scheduled_save_skips_when_empty(rt) -> None:
 
 
 def test_scheduled_save_runs_when_players_online(rt, fake_terraria) -> None:
-    fake_terraria.players = ("CTQ (121.33.239.89:44176)",)
+    fake_terraria.players = ("CTQ (198.51.100.30:44176)",)
     assert rt.server.scheduled_save(skip_if_empty=True) == "saved"
 
 
 def test_scheduled_restart_skips_when_players_online(rt, fake_terraria) -> None:
-    fake_terraria.players = ("CTQ (121.33.239.89:44176)",)
+    fake_terraria.players = ("CTQ (198.51.100.30:44176)",)
     detail = rt.server.scheduled_restart(skip_if_players=True, warn_minutes=5)
     assert detail.startswith("skipped")
     assert wait_for_command(fake_terraria, "say")

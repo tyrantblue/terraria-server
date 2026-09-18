@@ -33,26 +33,27 @@ def test_openapi_matches_snapshot() -> None:
     )
 
 
-def test_all_legacy_paths_are_documented() -> None:
+def test_legacy_paths_are_gone() -> None:
+    """2.0.0 删掉了旧 `/api/*`：它们必须从契约里彻底消失，别被误加回来。"""
     spec = json.loads(render())
     paths = spec["paths"]
     for path in (
-        "/api/health",
-        "/api/meta",
         "/api/server/status",
-        "/api/server/players",
         "/api/server/console",
         "/api/server/command",
         "/api/world/list",
         "/api/world/upload",
         "/api/world/switch",
+        "/api/meta/usage",
     ):
-        assert path in paths, f"{path} 不在 OpenAPI 里"
+        assert path not in paths, f"{path} 应当在 2.0.0 被删除"
+    for path in ("/api/health", "/api/meta", "/api/v1/server"):
+        assert path in paths, f"{path} 不该被删掉"
 
 
 def test_responses_have_schemas() -> None:
     """P0 的核心收益之一：响应不再是空的 {}，前端能生成类型。"""
     spec = json.loads(render())
-    status = spec["paths"]["/api/server/status"]["get"]["responses"]["200"]
+    status = spec["paths"]["/api/v1/server"]["get"]["responses"]["200"]
     schema = status["content"]["application/json"]["schema"]
-    assert schema, "/api/server/status 的 200 响应没有 schema"
+    assert schema, "/api/v1/server 的 200 响应没有 schema"

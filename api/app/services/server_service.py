@@ -25,6 +25,8 @@ TIME_PHASES = {"dawn", "noon", "dusk", "midnight"}
 RESTART_TIMEOUT = 60.0
 #: exit 命令本身带保存；先单独 save 一次，给落盘留点时间
 SAVE_GRACE = 1.0
+#: 心跳报过一次 stalled 之后，`GET /api/v1/server` 在这段时间内都继续报 `log_stalled`
+STALL_MEMORY = 900.0
 
 
 def _single_line(value: str, *, field: str) -> str:
@@ -47,6 +49,7 @@ class ServerService:
         reader=None,
         *,
         stall_cooldown: float = 1800.0,
+        log_stall_seconds: float = 120.0,
     ) -> None:
         self._channel = channel
         self._status = status
@@ -54,7 +57,10 @@ class ServerService:
         self._operations = operations
         self._reader = reader
         self._stall_cooldown = stall_cooldown
+        self._log_stall_seconds = log_stall_seconds
         self._last_stall_notice = 0.0
+        #: 心跳判定「管道停了」之后，这个时刻之前都继续对外报 log_stalled
+        self._stalled_until = 0.0
 
     # -- 只读 ---------------------------------------------------------
     def status(self) -> ServerSnapshot:
@@ -63,24 +69,30 @@ class ServerService:
     def players(self) -> list[str]:
         return self._status.players()
 
-    # -- 通用命令 -----------------------------------------------------
-    def run_command(self, command: str) -> str:
-        """透传一条控制台命令。
+    def log_health(self, *, running: bool) -> tuple[bool, float | None]:
+        """`(log_stalled, log_age)`——给 `GET /api/v1/server` 用（issue #2）。
 
-        旧实现是 fire-and-forget（send_command），这里保持同样的语义：
-        面板发 `save`、`exit` 这类会阻塞/终止服务端的命令时不会被误判为超时。
+        两个判据取「或」：
+
+        1. **心跳的结论**（权威）：哨兵写进去了却读不到回显 → 管道停了。
+           之后 `STALL_MEMORY` 秒内都继续报 true，直到下一次探活成功。
+        2. **日志年龄**：服务端能读到版本、日志却超过 `LOG_STALL_SECONDS` 没有新内容。
+           面板每次读状态都会发 `time`/`playing`，这些回显正常时会立刻刷新 mtime，
+           所以「有版本 + 日志很旧」基本只可能是管道停了——这也是为什么阈值能取 120s
+           而不会因为「没人在线的安静夜晚」误报。
+
+        重启/切世界期间日志本来就会安静，这时直接返回 false（不误报）。
         """
-        command = command.strip()
-        if not command:
-            # 旧实现会走到 HTTPException(500)；这里修正为 400，见 CHANGELOG
-            raise BadRequest("command cannot be empty")
-        if "\n" in command or "\r" in command:
-            raise BadRequest("command must be a single line")
-        self._channel.send(command)
-        # 任何命令都可能改到 motd/上限/时间/玩家，保守地把缓存作废
-        self._status.invalidate()
-        return command
+        age = self._reader.age() if self._reader is not None else None
+        if self._stalled_until > time.time():
+            return True, age
+        if not running or age is None:
+            return False, age
+        if self._operations.busy() is not None:
+            return False, age
+        return age > self._log_stall_seconds, age
 
+    # -- 通用命令 -----------------------------------------------------
     def save(self) -> None:
         self._channel.send("save")
 
@@ -169,9 +181,14 @@ class ServerService:
             return f"unavailable: {exc}"
         except Exception as exc:  # noqa: BLE001 - 其它异常也如实报出来
             return f"error: {exc}"
+
         if not stalled:
+            # 探活成功 → 清掉对外暴露的 log_stalled
+            self._stalled_until = 0.0
             return "ok"
 
+        # 记下来，让 GET /api/v1/server 也能看到（不必等到下一次探活）
+        self._stalled_until = time.time() + STALL_MEMORY
         age = self._reader.age() if self._reader is not None else None
         now = time.time()
         if now - self._last_stall_notice < self._stall_cooldown:

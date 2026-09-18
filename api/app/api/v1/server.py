@@ -34,6 +34,7 @@ def _server_state(rt: RuntimeDep) -> dict[str, object]:
     worlds, active = rt.world.list()
     world = next((item for item in worlds if item["file"] == active), None)
     config = rt.config.load()
+    log_stalled, log_age = rt.server.log_health(running=snapshot.version is not None)
     return {
         "running": snapshot.running,
         "version": snapshot.version,
@@ -51,7 +52,14 @@ def _server_state(rt: RuntimeDep) -> dict[str, object]:
             ],
         },
         "world": world,
-        "config": {key: config[key] for key in sorted(config)},
+        # 敏感键（password）只回掩码，不回明文——见 issue #6
+        "config": config_service.mask_secrets(
+            {key: config[key] for key in sorted(config)}
+        ),
+        "password_set": config_service.secret_is_set(config, "password"),
+        # 日志管道健康：能读到 version 才算「服务端在运行」
+        "log_stalled": log_stalled,
+        "log_age": log_age,
     }
 
 
@@ -97,7 +105,8 @@ def get_config(rt: RuntimeDep) -> dict[str, object]:
     if "world" in printable:
         printable["world"] = config_service.world_filename(printable["world"]) or printable["world"]
     return {
-        "values": printable,
+        "values": config_service.mask_secrets(printable),
+        "password_set": config_service.secret_is_set(values, "password"),
         "editable_keys": sorted(config_service.EDITABLE_KEYS),
         "runtime_keys": sorted(config_service.RUNTIME_KEYS),
         "restart_keys": sorted(config_service.RESTART_KEYS),
@@ -111,6 +120,15 @@ def update_config(
     response: Response,
     rt: RuntimeDep,
 ) -> dict[str, object]:
+    """写配置。
+
+    `password` 的三态语义（掩码之后必须明确，见 issue #6）：
+
+    * **不带 `password` 键** = 不修改（前端输入框留空时就不要发送这个键）；
+    * **带非空值** = 设为该密码；
+    * **带空字符串** = 400。这里刻意不允许「清空」——静默清空密码会让服务器
+      直接对公网敞开，需要清空请显式改 `serverconfig.txt` 后重启。
+    """
     result = rt.server.update_config(
         request.values,
         apply=request.apply,

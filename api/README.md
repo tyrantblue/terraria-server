@@ -11,8 +11,10 @@ app/
 ├── core/          settings (paths/timeouts/API version) and domain errors
 ├── schemas/       Pydantic request/response models — the source of the OpenAPI contract
 ├── services/      everything that is not HTTP
-│   ├── console/   FIFO channel (locking + sentinel), log reader, console-output parser
+│   ├── console/   FIFO channel (locking + sentinel), log reader, parser, audit log
 │   ├── status.py  cached status collector
+│   ├── metrics.py cgroup/disk/player sampling for GET /api/v1/metrics
+│   ├── world_header.py  .wld header parser (size tier / difficulty / created_at)
 │   ├── *_service.py, runtime.py
 └── api/           thin routers: paths, status codes, dependency injection only
 ```
@@ -52,6 +54,8 @@ Three artifacts keep the frontend in sync (details in `../docs/api-refactor-plan
 | --- | --- |
 | `openapi.json` | machine-readable snapshot; generate frontend types from it |
 | `../docs/api/CHANGELOG.md` | human-readable changes with migration examples |
-| `GET /api/meta` | runtime handshake (`api_version`, `min_client_version`, `deprecations`) |
+| `GET /api/meta` | runtime handshake (`api_version`, `min_client_version`, `capabilities`) |
 
+2.0.0 removed the legacy `/api/*` routes, so `GET /api/meta/usage` and the deprecation
+middleware are gone too; `deprecations` is still returned but is always `[]`.
 CI fails when the snapshot is stale, so a contract change cannot land undocumented.
