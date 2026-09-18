@@ -1162,6 +1162,9 @@ in-process protections (reference: `docs/api/v1.md` §0):
   `/api/health` — so an old panel can still learn that it must upgrade. Requests without
   the header (scripts, curl) are not gated.
 * The rate limiter is **per-process**: multi-replica deployments need shared storage.
+* It keys on `request.client.host`. Behind a reverse proxy with uvicorn's
+  `--proxy-headers` disabled, every request shares the proxy's bucket — enable
+  `--proxy-headers` with a correct `--forwarded-allow-ips`, or rate limit at the edge.
 * `POST /api/v1/server/restart` only works while the game server is running (it writes to
   the console FIFO). To bring back an already-exited container use
   `docker compose restart terraria`.

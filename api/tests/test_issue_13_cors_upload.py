@@ -66,34 +66,50 @@ def test_cors_preflight_is_answered(client) -> None:
     assert response.headers["access-control-allow-origin"] == "*"
 
 
-def test_chunked_upload_service_path_also_has_cors(settings, fake_terraria) -> None:
-    """没有 Content-Length 时中间件不预检，413 由 service 层抛出——同样带 CORS 头。
-
-    这条覆盖 issue #13 验收标准里的「两条路径（中间件预检 / service 层）行为一致」。
-    """
-    boundary = "----terrariatest"
+def _chunked_upload(client, filename: str, payload: bytes, boundary: str):
+    """发一个没有 Content-Length 的 multipart 上传（走 service 层而不是中间件预检）。"""
     body = (
         f"--{boundary}\r\n"
-        'Content-Disposition: form-data; name="file"; filename="chunked.wld"\r\n'
+        f'Content-Disposition: form-data; name="file"; filename="{filename}"\r\n'
         "Content-Type: application/octet-stream\r\n\r\n"
-    ).encode() + b"W" * 4096 + f"\r\n--{boundary}--\r\n".encode()
+    ).encode() + payload + f"\r\n--{boundary}--\r\n".encode()
 
     def stream():
         yield body
 
+    response = client.post(
+        "/api/v1/worlds",
+        # 生成器内容 → httpx 用 chunked，不带 Content-Length，中间件因此放行
+        content=stream(),
+        headers={**ORIGIN, "Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    assert "content-length" not in response.request.headers
+    return response
+
+
+def test_chunked_upload_413_service_path_has_cors(settings, fake_terraria) -> None:
+    """没有 Content-Length 时中间件不预检，413 由 service 层抛出——同样带 CORS 头。
+
+    这条覆盖 issue #13 验收标准里的「两条路径（中间件预检 / service 层）行为一致」。
+    """
     with _client(settings, max_bytes=1024) as client:
-        response = client.post(
-            "/api/v1/worlds",
-            # 生成器内容 → httpx 用 chunked，不带 Content-Length，中间件因此放行
-            content=stream(),
-            headers={
-                **ORIGIN,
-                "Content-Type": f"multipart/form-data; boundary={boundary}",
-            },
-        )
-        assert "content-length" not in response.request.headers
+        response = _chunked_upload(client, "chunked.wld", b"W" * 4096, "----terraria413")
         assert response.status_code == 413
         assert response.headers["access-control-allow-origin"] == "*"
         body_json = response.json()
         assert body_json["error"]["code"] == "payload_too_large"
         assert "limit_bytes" in body_json["error"]["details"]
+
+
+def test_chunked_upload_507_service_path_has_cors(
+    settings, fake_terraria, monkeypatch
+) -> None:
+    monkeypatch.setattr(world_service, "free_bytes", lambda _path: 4096)
+    with _client(settings, max_bytes=10 * 1024 * 1024) as client:
+        response = _chunked_upload(client, "chunked507.wld", b"W" * 1024, "----terraria507")
+        assert response.status_code == 507
+        assert response.headers["access-control-allow-origin"] == "*"
+        body_json = response.json()
+        assert body_json["error"]["code"] == "insufficient_storage"
+        assert body_json["error"]["details"]["free_bytes"] == 4096
+

@@ -179,3 +179,35 @@ def test_banlist_remove_is_noop_for_unknown_name(tmp_path) -> None:
     (worlds / "banlist.txt").write_text("alice\n", encoding="utf-8")
     assert BanList(worlds).remove("nobody") is False
     assert BanList(worlds).entries() == ["alice"]
+
+
+def test_banlist_remove_survives_a_non_cooperating_append(tmp_path, monkeypatch) -> None:
+    """游戏进程不持锁地追加时，replace 前的复查会把新行纳入，不丢行。
+
+    用 monkeypatch 在第一次读取之后模拟「外部追加」，让这个竞态可以确定地复现
+    （真实游戏进程不持 `banlist.txt.lock`）。
+    """
+    worlds = tmp_path / "worlds"
+    worlds.mkdir()
+    path = worlds / "banlist.txt"
+    path.write_text("alice\nbob\n", encoding="utf-8")
+    banlist = BanList(worlds)
+
+    original_read = BanList._read_text
+    injected = {"done": False}
+
+    def read(self, target):
+        text = original_read(self, target)
+        if not injected["done"] and target.name == "banlist.txt":
+            injected["done"] = True
+            # 不持锁的追加：模拟游戏进程在我们读完之后写了一行
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write("gameplayer\n")
+        return text
+
+    monkeypatch.setattr(BanList, "_read_text", read)
+
+    assert banlist.remove("alice") is True
+    assert injected["done"] is True
+    assert banlist.entries() == ["bob", "gameplayer"]
+

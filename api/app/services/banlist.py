@@ -10,8 +10,9 @@
 
 并发（issue #17.4）：删是「按行重写 + 原子替换」，两个并发 DELETE 若共用固定的
 `.tmp` 名会互相覆盖。现在临时名带随机后缀，并用 `banlist.txt.lock` 上的 flock
-串行化 API 侧的读-改-写。游戏进程自己的追加不持这把锁，所以只能保证 API 内部
-不丢行——这是文件协议的固有限制，文档里已注明。
+串行化 API 侧的读-改-写，replace 前还会再确认文件没变。游戏进程自己的追加不持
+这把锁，所以 **API 侧并发不丢行**；与游戏进程之间仍存在极小的窗口，这是文件协议
+的固有限制（已写进 docs/api/v1.md §3 与根 README §29.6）。
 """
 
 from __future__ import annotations
@@ -53,7 +54,7 @@ class BanList:
         if not path.is_file():
             return []
         names: list[str] = []
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        for line in self._read_text(path).splitlines():
             name = line.strip()
             if name and not name.startswith("#"):
                 names.append(name)
@@ -64,26 +65,52 @@ class BanList:
 
     # -- 写 -----------------------------------------------------------
     def remove(self, name: str) -> bool:
-        """按行移除一个名字。返回是否真的改动了文件。"""
+        """按行移除一个名字。返回是否真的改动了文件。
+
+        「唯一临时名 + flock」保证了 **API 侧**并发不丢行。但游戏进程自己往
+        `banlist.txt` 追加时不持这把锁，所以读-改-写窗口里的追加仍可能被覆盖。
+        这里通过「replace 前再读一次确认文件没变，变了就重来」把窗口从
+        「读+过滤+写」缩短到「最后一次读 → os.replace」这一段，并最多重试几轮。
+        这不能 100% 消除竞态（文件协议的固有限制），但把丢行概率降到极低。
+        """
         with self._exclusive():
             path = self.path
             if not path.is_file():
                 return False
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-            kept = [line for line in lines if line.strip() != name.strip()]
-            if len(kept) == len(lines):
-                return False
-            self._write_atomic("\n".join(kept) + ("\n" if kept else ""))
+            target = name.strip()
+            latest = ""
+            for attempt in range(5):
+                original = self._read_text(path)
+                lines = original.splitlines()
+                kept = [line for line in lines if line.strip() != target]
+                if len(kept) == len(lines):
+                    return False
+                text = "\n".join(kept) + ("\n" if kept else "")
+                latest = self._read_text(path)
+                if latest == original:
+                    self._write_atomic(text)
+                    return True
+                if attempt == 4:
+                    # 外部一直在追加：用最新内容再过滤一次后尽力写入
+                    lines = latest.splitlines()
+                    kept = [line for line in lines if line.strip() != target]
+                    self._write_atomic("\n".join(kept) + ("\n" if kept else ""))
+                    return True
             return True
 
     def append(self, name: str) -> None:
         """给测试/运维用：在锁内追加一行（游戏进程自己追加时不走这里）。"""
         with self._exclusive():
             path = self.path
-            existing = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+            existing = self._read_text(path) if path.exists() else ""
             if existing and not existing.endswith("\n"):
                 existing += "\n"
             self._write_atomic(f"{existing}{name}\n")
+
+    # -- 内部 ---------------------------------------------------------
+    def _read_text(self, path: Path) -> str:
+        """单独抽出来便于测试注入「不合作的追加者」（见 test_issue_17）。"""
+        return path.read_text(encoding="utf-8", errors="replace")
 
     def _write_atomic(self, text: str) -> None:
         # 唯一临时名：并发写不再共用同一个 `.tmp`（issue #17.4）

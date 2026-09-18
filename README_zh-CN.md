@@ -1169,6 +1169,9 @@ API 假定鉴权在边缘完成（Cloudflare Access / VPN / 受限反向代理�
   **426** `client_outdated`；`/api/meta` 与 `/api/health` 除外，好让老面板仍能通过
   握手知道自己该升级。不带头（脚本/curl）不拦。
 * 限流器是**进程内**的：多副本部署需要共享存储。
+* 它按 `request.client.host` 计数。如果 API 在反向代理后面而 uvicorn 没启用
+  `--proxy-headers`，所有请求会共用代理的桶——请启用 `--proxy-headers` 并正确配置
+  `--forwarded-allow-ips`，或把限流放到边缘。
 * `POST /api/v1/server/restart` 只对正在运行的游戏服有效（要写控制台 FIFO）。
   已经退出的容器请用 `docker compose restart terraria` 拉起。
 

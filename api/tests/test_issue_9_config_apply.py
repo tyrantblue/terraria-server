@@ -81,14 +81,24 @@ def test_apply_failure_reports_persisted_then_retry_succeeds(
     assert second.json()["applied"] == ["motd"]
 
 
-def test_restart_key_is_reapplied_when_file_already_matches(client, settings) -> None:
-    """重启类键同理：文件已是目标值，apply=True 仍要提交重启把它真正生效。"""
+def test_unchanged_restart_key_does_not_trigger_a_spurious_restart(
+    client, settings
+) -> None:
+    """整份表单原样 PUT 回来（重启键的值没变）不应该触发重启。"""
     _write_config(settings, "port=7778\n")
 
     response = client.put("/api/v1/config", json={"values": {"port": 7778}, "apply": True})
-    assert response.status_code == 202
+    assert response.status_code == 200
     body = response.json()
     assert body["changed"] == []
+    assert body["requires_restart"] == []
+    assert body["operation_id"] is None
+
+
+def test_changed_restart_key_still_restarts(client) -> None:
+    response = client.put("/api/v1/config", json={"values": {"port": 7779}, "apply": True})
+    assert response.status_code == 202
+    body = response.json()
     assert body["requires_restart"] == ["port"]
     assert body["operation_id"]
     assert wait_operation(client, body["operation_id"])["state"] == "succeeded"

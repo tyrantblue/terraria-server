@@ -78,7 +78,8 @@
 * **`PUT /api/v1/config` 的 apply 语义**（issue #9）：`apply=true` 时无条件对齐请求里的
   `runtime_keys`（与文件是否变化无关），所以「文件已写入、上次 apply 失败」的请求
   可以原样重试；apply 失败时 `error.details` 给出 `{persisted, applied, pending}`。
-  `requires_restart` 的含义相应明确化（见 `v1.md` §5）。
+  重启类键仍是**文件变了才重启**（整份表单原样 PUT 不会触发无谓重启），
+  `requires_restart = changed ∩ restart_keys`（见 `v1.md` §5）。
 * **互斥集合收敛**（issue #12）：`world.restore` 加入 `EXCLUSIVE_KINDS`；
   恢复进行中会拒绝 `world.backup`（409）。`config.apply` 从未被真正提交过，
   已从集合与文档删除。
@@ -98,9 +99,11 @@
 * **守卫非法 IP 由 503 改为 400 `bad_request`**（issue #16.4），
   `error.details.ip` 是原值；只有守卫确实不可用才是 503 `guard_unavailable`。
   顺带把 IPv4 校验收紧到每段 `0..255`。
-* **`banlist.txt` 并发写不再丢行**（issue #17.4）：临时文件改为
-  `banlist.txt.<8 位 hex>.tmp`，并用 `banlist.txt.lock` 上的 flock 串行化 API 侧的
-  读-改-写。
+* **`banlist.txt` 的 API 侧并发写不再丢行**（issue #17.4）：临时文件改为
+  `banlist.txt.<8 位 hex>.tmp`，用 `banlist.txt.lock` 上的 flock 串行化 API 侧的
+  读-改-写，并在 `os.replace` 前再确认文件没变（变了就重来）。
+  **注意**：游戏进程自己追加封禁时不持这把锁，与它之间仍有一个极小的竞态窗口
+  （原版文件协议的固有限制）——已写进 `v1.md` §3。此处不宣称「绝不丢行」。
 * 重启一个**已经退出**的服务端时给出可操作的错误（issue #11 附加项）：
   提示用 `docker compose restart terraria` 拉起，而不是裸 ENXIO。
 
@@ -116,7 +119,7 @@
 
 * 新增 `app/core/version.py`（语义化版本比较）与 `app/services/ratelimit.py`
   （进程内滑动窗口限流）。
-* 测试 206 → **269**：issue #9–#18 各有对应回归文件
+* 测试 206 → **273**：issue #9–#18 各有对应回归文件
   （`test_issue_9_config_apply.py` … `test_issue_18_message_codes.py`）。
 
 ---

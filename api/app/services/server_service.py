@@ -314,15 +314,13 @@ class ServerService:
         # 这样「文件已落盘但上次 apply 失败」的请求可以原样重试。
         self._config.set_many(normalized)
 
-        if apply:
-            # apply=True 时对**请求里的**运行时可调项做「运行态对齐」，
-            # 而不是只看文件差异。否则文件里已经是新值、运行态还是旧值时，
-            # 重试会返回 200 + applied=[] 的假成功（issue #9，不可自愈的死状态）。
-            restart_needed = sorted(set(normalized) & config_service.RESTART_KEYS)
-        else:
-            restart_needed = sorted(
-                set(persisted_changed) & config_service.RESTART_KEYS
-            )
+        # 重启类键：只有**文件真的变了**才提交重启。否则面板把整份表单原样 PUT
+        # 回来（值都没变）也会触发一次重启——那是不可接受的副作用。需要让已落盘的
+        # 重启类值重新生效，请显式调用 POST /api/v1/server/restart。
+        #
+        # 注意：运行时可调项（motd/password/maxplayers）不走这条路，apply=True 时
+        # 会在下面**无条件**对齐运行态，这正是 issue #9 要修的死状态。
+        restart_needed = sorted(set(persisted_changed) & config_service.RESTART_KEYS)
 
         result: dict[str, object] = {
             "persisted": sorted(normalized),
