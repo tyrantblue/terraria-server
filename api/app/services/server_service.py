@@ -144,6 +144,15 @@ class ServerService:
             raise BadRequest("password cannot be empty")
         self._channel.send(f"password {password}")
 
+    def clear_password(self) -> None:
+        """清空密码（面板那侧的语义是「留空即移除」，见 issue #6）。
+
+        原版控制台的 `password` 命令带参数时设值，不带参数时就是清除/提示用法——
+        两种结果都能接受：配置里已经写了 `password=`（重启后一定生效），
+        裸命令只是让它在**不重启**的情况下尽快生效。
+        """
+        self._channel.send("password")
+
     # -- 重启（长任务） -------------------------------------------------
     def restart(self) -> Operation:
         """保存并让容器重启服务端；返回后台操作。"""
@@ -309,7 +318,12 @@ class ServerService:
                 self.set_motd(changed["motd"])
                 applied.append("motd")
             if "password" in changed:
-                self.set_password(changed["password"])
+                # 空字符串 = 清空（面板的「留空即移除」），走单独的路径，
+                # 因为 set_password() 会拒绝空值（那条校验是给 legacy 接口用的语义）。
+                if changed["password"]:
+                    self.set_password(changed["password"])
+                else:
+                    self.clear_password()
                 applied.append("password")
             if "maxplayers" in changed:
                 self.set_max_players(int(changed["maxplayers"]))

@@ -237,11 +237,21 @@ def test_config_put_rejects_roundtripped_mask(client) -> None:
     assert response.json()["error"]["details"]["key"] == "password"
 
 
-def test_config_put_empty_password_is_rejected(client) -> None:
-    """空字符串 = 把服务器密码清掉；这里刻意不允许（见 v1.md §5 的三态语义）。"""
-    response = client.put("/api/v1/config", json={"values": {"password": ""}})
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "bad_request"
+def test_config_put_empty_password_clears_it(client, settings) -> None:
+    """空字符串 = 清空密码（面板的「留空即移除」依赖这个语义，见 issue #6）。"""
+    _set_password_line(settings, "123456")
+    assert client.get("/api/v1/config").json()["password_set"] is True
+
+    response = client.put(
+        "/api/v1/config", json={"values": {"password": ""}, "apply": True}
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] == ["password"]
+    assert body["applied"] == ["password"]
+
+    assert "password=\n" in settings.config_file.read_text(encoding="utf-8")
+    assert client.get("/api/v1/config").json()["password_set"] is False
 
 
 # ---------------------------------------------------------------- 控制台流（#7）

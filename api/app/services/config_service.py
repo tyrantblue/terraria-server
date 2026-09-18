@@ -112,7 +112,9 @@ def validate(values: dict[str, object]) -> dict[str, str]:
                 details={"key": key, "mask": SECRET_MASK},
             )
         if key in _TEXT_KEYS:
-            if not text:
+            # 敏感键允许空值：`password=""` 是「清空密码」（面板的「留空即移除」就靠它）。
+            # 其它文本键（motd/world/seed/...）仍然不允许空。
+            if not text and key not in SECRET_KEYS:
                 raise BadRequest(f"{key} 不能为空")
             if len(text) > 512:
                 raise BadRequest(f"{key} 太长（最多 512 字符）")
