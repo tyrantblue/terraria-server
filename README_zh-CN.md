@@ -250,7 +250,7 @@ docker compose logs terraria
 也可以通过 API：
 
 ```text
-GET /api/server/status
+GET /api/v1/server
 ```
 
 查看服务器版本。

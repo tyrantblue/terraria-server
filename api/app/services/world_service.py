@@ -15,6 +15,7 @@ import hashlib
 import re
 import shutil
 from datetime import datetime
+from uuid import uuid4
 
 from app.core.errors import (
     BadRequest,
@@ -171,7 +172,9 @@ class WorldService:
         if destination.exists():
             raise Conflict(f"world already exists: {safe_name}")
 
-        temp = destination.with_name(destination.name + PART_SUFFIX)
+        # 临时名必须唯一：两个人同时上传同名世界时，共用一个 .part 会让两边
+        # 交错写同一个文件，先完成的 os.replace 之后另一个必然写坏/失败。
+        temp = destination.with_name(f"{destination.name}.{uuid4().hex[:8]}{PART_SUFFIX}")
         written = 0
         try:
             if declared_size is None:

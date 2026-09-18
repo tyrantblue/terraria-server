@@ -74,7 +74,7 @@ class LogReader:
         cursor, lines = self.read_lines_with_offsets(offset)
         return cursor, [text for _offset, text in lines]
 
-    # -- 尾部读取（/api/server/console 用） ---------------------------
+    # -- 尾部读取（/api/v1/console 用） ------------------------------
     def tail_with_offsets(self, count: int, max_bytes: int = TAIL_MAX_BYTES) -> list[Line]:
         """返回最后 count 行的 (偏移, 文本)，只回读文件尾部至多 max_bytes 字节。"""
         if count <= 0:

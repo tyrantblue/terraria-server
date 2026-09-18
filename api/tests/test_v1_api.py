@@ -363,7 +363,7 @@ def test_exclusive_operations_do_not_overlap(client, fake_terraria) -> None:
 # ---------------------------------------------------------------- 握手与旧接口
 def test_meta_handshake(client) -> None:
     body = client.get("/api/meta").json()
-    assert body["api_version"] == "2.0.0"
+    assert body["api_version"] == "2.0.1"
     assert body["min_client_version"] == "1.4.0"
     assert body["server_version"] == "1.4.5.8"
     assert "world.switch" in body["capabilities"]

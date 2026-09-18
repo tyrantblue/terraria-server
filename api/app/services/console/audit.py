@@ -130,8 +130,10 @@ class AuditLog:
                 return list(reversed(self._entries))
         entries = self._read_file()
         if not entries:
+            # 回读拿不到东西（文件还没建、落盘失败、权限不足）时退回内存缓存。
+            # 内存是「旧的在前」，反转后取**前** tail 条才是最近的 N 条。
             with self._lock:
-                return list(reversed(self._entries))[-tail:]
+                return list(reversed(self._entries))[:tail]
         return list(reversed(entries[-tail:]))
 
     def _read_file(self) -> list[AuditEntry]:

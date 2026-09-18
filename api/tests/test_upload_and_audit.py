@@ -69,6 +69,14 @@ def test_audit_failure_does_not_break_the_command(tmp_path: Path) -> None:
     assert broken.entries()[0].command == "save"
 
 
+def test_audit_tail_falls_back_to_memory_newest_first(tmp_path: Path) -> None:
+    """回读不到文件时（落盘失败/权限不足）`?tail=N` 仍要返回**最近** N 条。"""
+    broken = AuditLog(tmp_path)          # 路径是目录 → _read_file() 永远为空
+    for index in range(5):
+        broken.record(f"cmd{index}", actor="api")
+    assert [entry.command for entry in broken.entries(tail=2)] == ["cmd4", "cmd3"]
+
+
 # ---------------------------------------------------------------- 预检
 def test_precheck_rejects_oversize(tmp_path: Path) -> None:
     with pytest.raises(PayloadTooLarge) as excinfo:
@@ -113,16 +121,27 @@ def test_upload_over_limit_is_413_without_leftovers(small_limit_client, settings
 class _FakeStream:
     """按块返回字节的假上传流（没有 Content-Length 的 chunked 请求）。"""
 
-    def __init__(self, data: bytes) -> None:
+    def __init__(self, data: bytes, chunk: int | None = None) -> None:
         self._data = data
         self._pos = 0
+        self._chunk = chunk
 
     async def read(self, size: int = -1) -> bytes:
         if size is None or size < 0:
             size = len(self._data)
+        if self._chunk:
+            size = min(size, self._chunk)
         chunk = self._data[self._pos : self._pos + size]
         self._pos += len(chunk)
         return chunk
+
+
+class _SlowStream(_FakeStream):
+    """每个 chunk 之间让出事件循环，用来制造真正的并发交错。"""
+
+    async def read(self, size: int = -1) -> bytes:
+        await asyncio.sleep(0)
+        return await super().read(size)
 
 
 def test_streaming_limit_refuses_without_content_length(rt) -> None:
@@ -158,6 +177,23 @@ def test_upload_is_atomic_and_cleans_part_file(client, settings) -> None:
     assert created.status_code == 201
     assert (settings.worlds_dir / "atomic.wld").read_bytes() == b"world-bytes"
     assert list(settings.worlds_dir.glob("*.part")) == []
+
+
+def test_concurrent_same_name_uploads_do_not_collide(rt) -> None:
+    """同名并发上传各自写自己的 .part：结果必须是其中一份完整内容，不能互相写坏。"""
+    first = b"A" * 4096
+    second = b"B" * 4096
+
+    async def run() -> None:
+        await asyncio.gather(
+            rt.world.upload("same.wld", _SlowStream(first, chunk=256)),
+            rt.world.upload("same.wld", _SlowStream(second, chunk=256)),
+        )
+
+    asyncio.run(run())
+    written = (rt.settings.worlds_dir / "same.wld").read_bytes()
+    assert written in (first, second)
+    assert list(rt.settings.worlds_dir.glob("*.part")) == []
 
 
 def test_empty_upload_is_rejected(client) -> None:

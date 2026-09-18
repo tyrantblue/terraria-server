@@ -39,7 +39,8 @@ def _env_bool(name: str, default: bool) -> bool:
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
 #: 2.0.0：删除旧 `/api/*` 资源路由，并把 GET 配置里的明文密码改成掩码。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.0.0")
+#: 2.0.1：审计 `?tail=N` 的内存兜底顺序、并发上传的 `.part` 命名（HTTP 契约不变）。
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.0.1")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。

@@ -25,7 +25,48 @@
 
 * **破坏性变更只在 major 版本做**，并且提前一个发布周期在本文件里给出 Sunset 日期。
 * 每条变更都要写清 `Added / Changed / Deprecated / Removed`，并给出 old → new 的迁移写法。
-* 旧接口与新接口**并行运行**；删除前先看弃用埋点数据（`/api/meta` 里会列出弃用项）。
+* 2.0.0 起旧接口已全部删除，`Deprecation` / `Sunset` 响应头与 `/api/meta/usage`
+  埋点也一并移除；今后若要再弃用某个接口，先在本文件给出 Sunset 日期，
+  并至少与替代接口并行一个发布周期。
+
+---
+
+## [2.0.1] — 2026-09-19
+
+**patch：HTTP 契约没变**，只修两处实现缺陷，并补齐 2.0.0 遗漏的文档。
+
+### Fixed
+
+* **审计 `?tail=N` 的内存兜底顺序反了**。回读不到文件时（`audit.log` 还没建、
+  落盘失败、目录只读）会退回内存缓存，但取的是**最旧**的 N 条而不是最近的 N 条：
+
+  ```python
+  list(reversed(self._entries))[-tail:]   # 旧：最旧的 N 条
+  list(reversed(self._entries))[:tail]    # 新：最近的 N 条
+  ```
+
+  文件正常时不受影响；只有「审计写不进去」这种降级场景才会看到错误的历史。
+
+* **并发上传同名世界的 `.part` 临时文件会互相覆盖**：临时名固定为
+  `xxx.wld.part`，两个请求同时上传 `gogogo.wld` 会交错写同一个文件，
+  先完成的那个 `os.replace` 之后，另一个必然失败（`FileNotFoundError`）或写坏内容。
+  现在临时名带随机后缀（`gogogo.wld.<8 位 hex>.part`）。
+
+### Docs
+
+* `docs/api/v1.md`：补上 2.0.0 已上线但没写的字段——`GET /api/v1/server` 的
+  `log_stalled` / `log_age`（含判定与不误报的说明）、`world.metadata` 的字段表、
+  世界表的 `metadata`，以及通知事件 `log_stalled`（含 `console_stalled` 改名提示）。
+* `README.md` / `README_zh-CN.md`：示例里的 `GET /api/server/status` 在 2.0.0 已删除，
+  改为 `GET /api/v1/server`。
+* `docs/api/frontend-migration.md`：「旧接口照常可用 / 不改也能跑」的正文与
+  2.0.0 的事实矛盾，已明确标注为历史记录。
+* `app/api/v1/__init__.py`、`app/services/console/log_reader.py` 里指向已删除模块与
+  旧路由的注释已更新。
+
+### Internal
+
+* 测试 204 → **206**（审计兜底顺序、并发同名上传各一条回归）。
 
 ---
 

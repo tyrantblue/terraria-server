@@ -248,7 +248,7 @@ docker compose logs terraria
 Or use the API:
 
 ```text
-GET /api/server/status
+GET /api/v1/server
 ```
 
 ---
