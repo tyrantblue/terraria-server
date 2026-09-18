@@ -85,6 +85,20 @@ def build_job_specs(
             )
         )
 
+    if settings.schedule_console_check_seconds > 0:
+        specs.append(
+            JobSpec(
+                name="console",
+                kind=INTERVAL,
+                interval_seconds=settings.schedule_console_check_seconds,
+                description=(
+                    f"每 {settings.schedule_console_check_seconds} 秒发一条命令，"
+                    "确认控制台/日志管道还活着"
+                ),
+                runner=server.console_heartbeat,
+            )
+        )
+
     if settings.schedule_restart_at:
         specs.append(
             JobSpec(
@@ -114,6 +128,15 @@ def _job_result_notifier(notifier: Notifier):
         elif name == "backup" and status == "succeeded":
             notifier.notify(
                 "backup_done", "自动备份完成", level="success", detail={"detail": detail or ""}
+            )
+        elif (
+            name == "console"
+            and status == "succeeded"
+            and (detail or "").startswith("stalled:")
+        ):
+            notifier.notify(
+                "console_stalled", "面板读不到服务端状态：日志管道可能停更",
+                level="error", detail={"detail": detail or ""},
             )
         elif name == "restart" and status == "skipped":
             notifier.notify(
@@ -147,7 +170,14 @@ def build_runtime(settings: Settings | None = None) -> Runtime:
         fmt=settings.notify_format,
         events=settings.notify_events,
     )
-    server_service = ServerService(channel, status, config, operations)
+    server_service = ServerService(
+        channel,
+        status,
+        config,
+        operations,
+        reader,
+        stall_cooldown=settings.console_stall_cooldown,
+    )
     world_service = WorldService(
         settings.worlds_dir,
         config,

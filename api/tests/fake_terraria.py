@@ -59,6 +59,8 @@ class FakeTerraria(threading.Thread):
         self.players = players
         #: 收到过的命令（测试用来断言"有没有真的重启"之类）
         self.commands: list[str] = []
+        #: 设成 True 就模拟"日志管道停更"：命令照收，但不写日志
+        self.swallow_output = False
         self._stop = threading.Event()
         if startup_lines:
             self._append("Error Logging Enabled.")
@@ -108,6 +110,8 @@ class FakeTerraria(threading.Thread):
         self._append(f"{text}\n: ")
 
     def _append(self, text: str) -> None:
+        if self.swallow_output:
+            return
         with self.log.open("a", encoding="utf-8") as handle:
             handle.write(text + "\n")
             handle.flush()

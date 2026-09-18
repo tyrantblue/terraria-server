@@ -7,6 +7,9 @@ from __future__ import annotations
 
 import threading
 
+import pytest
+
+from app.core.errors import ConsoleTimeout
 from app.services.console.channel import ConsoleChannel
 from app.services.console.parser import FENCE_TEXT, is_fence_line
 
@@ -30,6 +33,22 @@ def test_sentinel_line_is_filtered_from_the_console_view(rt) -> None:
 def test_send_does_not_produce_console_noise(rt) -> None:
     rt.channel.send("save")
     assert not any(FENCE_TEXT in line for line in rt.reader.tail(500))
+
+
+def test_probe_does_not_add_console_noise(rt) -> None:
+    """探活只写哨兵：日志里多出来的只有哨兵行（及提示符），面板看不到。"""
+    before = len(rt.reader.tail(500))
+    rt.channel.probe(timeout=1.0)
+    new_lines = rt.reader.tail(500)[before:]
+    assert new_lines, "探活应该至少写出一行哨兵"
+    assert all(is_fence_line(line) or not line.strip(": ") for line in new_lines), new_lines
+
+
+def test_probe_times_out_when_the_pipeline_is_stalled(rt, fake_terraria) -> None:
+    """哨兵没出现时必须报错，不能像 run() 那样回退成"返回部分输出"。"""
+    fake_terraria.swallow_output = True
+    with pytest.raises(ConsoleTimeout):
+        rt.channel.probe(timeout=0.3)
 
 
 def test_concurrent_commands_do_not_cross_talk(settings, rt) -> None:

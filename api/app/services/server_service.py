@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import time
 
-from app.core.errors import BadRequest, Conflict
+from app.core.errors import BadRequest, Conflict, ConsoleTimeout, ConsoleUnavailable
 from app.services import config_service
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
@@ -44,11 +44,17 @@ class ServerService:
         status: StatusCollector,
         config: ConfigService,
         operations: OperationRegistry,
+        reader=None,
+        *,
+        stall_cooldown: float = 1800.0,
     ) -> None:
         self._channel = channel
         self._status = status
         self._config = config
         self._operations = operations
+        self._reader = reader
+        self._stall_cooldown = stall_cooldown
+        self._last_stall_notice = 0.0
 
     # -- 只读 ---------------------------------------------------------
     def status(self) -> ServerSnapshot:
@@ -130,6 +136,52 @@ class ServerService:
     def restart(self) -> Operation:
         """保存并让容器重启服务端；返回后台操作。"""
         return self._operations.submit("server.restart", self._restart_job)
+
+    # -- 控制台心跳（发现"日志停更"） --------------------------------------
+    def console_heartbeat(self, timeout: float = 3.0) -> str:
+        """定期探活，用来区分「服务端没事」和「日志管道停了」。
+
+        为什么不用「日志多久没更新」直接判断：没人在线、面板也没开的时候，
+        日志本来就可以安静几个小时，那样会误报。所以这里主动注入一条哨兵
+        （裸 `kick`，无副作用、且会被控制台视图过滤掉），只看它有没有回显：
+
+        * 拿到回显 → ok；
+        * FIFO 写不进去（服务端正在重启）→ unavailable，不告警；
+        * 有重启/切世界这类操作在跑 → 同样报 unavailable，不告警
+          （重启期间日志本来就会安静，直接探活会误报）；
+        * 写进去了但日志一直没有哨兵行 → **管道停了**（本轮真踩过：awk 缓冲导致
+          日志 6 分钟没有输出，表现为"游戏能玩、面板全瞎"）。
+
+        停滞只在冷却时间外上报一次，避免每分钟刷屏。
+        """
+        busy = self._operations.busy()
+        if busy is not None:
+            return f"unavailable: {busy.kind} 正在进行（{busy.id}），跳过探活"
+
+        stalled = False
+        try:
+            self._channel.probe(timeout=timeout)
+        except ConsoleTimeout:
+            # ConsoleTimeout 是 ConsoleUnavailable 的子类，必须放在前面捕获，
+            # 否则「日志停更」会被当成「服务端正在重启」而漏报。
+            stalled = True
+        except ConsoleUnavailable as exc:
+            return f"unavailable: {exc}"
+        except Exception as exc:  # noqa: BLE001 - 其它异常也如实报出来
+            return f"error: {exc}"
+        if not stalled:
+            return "ok"
+
+        age = self._reader.age() if self._reader is not None else None
+        now = time.time()
+        if now - self._last_stall_notice < self._stall_cooldown:
+            return "stalled (已告警过，冷却中)"
+        self._last_stall_notice = now
+        where = f"，日志最近写入在 {age:.0f} 秒前" if age is not None else ""
+        return (
+            f"stalled: 控制台哨兵写入成功但 {timeout:g} 秒内没有回显"
+            f"{where}；日志管道可能停更（面板会读不到状态）"
+        )
 
     # -- 定时任务用的入口 ------------------------------------------------
     def scheduled_save(self, skip_if_empty: bool) -> str:

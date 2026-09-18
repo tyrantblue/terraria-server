@@ -52,7 +52,11 @@ _FENCE = FENCE_TEXT.encode()
 @contextmanager
 def exclusive_lock(path: Path, timeout: float):
     """基于 flock 的跨进程互斥（不同容器共享内核，同一挂载目录下可用）。"""
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError as exc:
+        # control/ 不存在或不可写 —— 控制台实际上就是不可用，别让裸 OSError 冒出去
+        raise ConsoleUnavailable(f"控制台锁不可用（{path}）: {exc}") from exc
     acquired = False
     try:
         deadline = time.monotonic() + max(0.0, timeout)
@@ -132,6 +136,17 @@ class ConsoleChannel:
         with self._gate:
             return self._run_locked(command, self.timeout if timeout is None else timeout)
 
+    def probe(self, timeout: float | None = None) -> None:
+        """探活：只写哨兵、只等哨兵，验证「写 FIFO → 日志回显」这条链路还活着。
+
+        与 run() 的区别是**哨兵没出现就一定报错**，绝不回退成"返回部分输出"：
+        回退会让「日志只 flush 了一半」这种停更被误判成正常。
+        代价为零——裸 kick 是无效调用，且哨兵行会被控制台视图按文本过滤掉，
+        所以面板/日志里看不到这次探活。
+        """
+        with self._gate:
+            self._probe_locked(self.timeout if timeout is None else timeout)
+
     # -- 内部 ---------------------------------------------------------
     def _run_locked(self, command: str, timeout: float) -> str:
         with exclusive_lock(self.lock_path, self.lock_timeout):
@@ -152,6 +167,19 @@ class ConsoleChannel:
             return text
 
         return data[: fence_start - start].decode("utf-8", errors="replace")
+
+    def _probe_locked(self, timeout: float) -> None:
+        with exclusive_lock(self.lock_path, self.lock_timeout):
+            start = self.reader.size()
+            self._write_payload(f"{self.sentinel}\n".encode())
+            _data, fence_start, _fence_end = self._await_fence(start, timeout)
+
+        if fence_start is None:
+            self._degraded += 1
+            logger.warning("console probe: sentinel not seen within %.1fs", timeout)
+            raise ConsoleTimeout(
+                f"控制台哨兵写入成功但 {timeout:g} 秒内没有回显（日志管道可能停更）"
+            )
 
     def _write_payload(self, payload: bytes) -> None:
         try:

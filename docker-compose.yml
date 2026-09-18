@@ -58,6 +58,9 @@ services:
       SCHEDULE_RESTART_AT: "05:00"       # 每天 05:00（SCHEDULE_TZ）重启；留空 = 关闭
       SCHEDULE_RESTART_SKIP_IF_PLAYERS: "1"
       SCHEDULE_RESTART_WARN_MINUTES: "5"
+      # 控制台心跳：定期发一条命令，发现"日志管道停更"（0 = 关闭）
+      SCHEDULE_CONSOLE_CHECK_SECONDS: "60"
+      CONSOLE_STALL_COOLDOWN: "1800"
       # ---- 事件通知（webhook）；URL 放在 .env 里（不进 Git），留空即关闭 ----
       NOTIFY_WEBHOOK_URL: "${NOTIFY_WEBHOOK_URL:-}"
       NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json

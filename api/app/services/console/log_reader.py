@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 #: tail 单次最多回读的字节数，避免日志很大时把整文件读进来
@@ -34,6 +35,13 @@ class LogReader:
             return self.path.stat().st_size
         except OSError:
             return 0
+
+    def age(self) -> float | None:
+        """日志最后一次写入距今多少秒（文件不存在返回 None）。"""
+        try:
+            return max(0.0, time.time() - self.path.stat().st_mtime)
+        except OSError:
+            return None
 
     def read_bytes(self, offset: int, end: int | None = None) -> bytes:
         try:

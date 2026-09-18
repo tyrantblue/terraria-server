@@ -8,11 +8,64 @@
 | `docs/api/CHANGELOG.md`（本文件） | 人读的变更说明，带迁移示例与 Sunset 日期 |
 | `GET /api/meta` | 运行时握手：版本不匹配时前端可提示用户刷新面板 |
 
-规则：
+## 版本号语义（`GET /api/meta` 的 `api_version`）
+
+| 变更 | 含义 | 前端应该怎么做 |
+| --- | --- | --- |
+| **patch**（1.4.1 → 1.4.2） | **HTTP 契约没变**：内部修复、新增加定时任务、新的 webhook 事件类型、新的环境变量等 | 什么都不用做。**不要因为 patch 差异弹提示** |
+| **minor**（1.4 → 1.5） | HTTP 契约有**新增**（新路由/新字段/新能力） | 用 `capabilities` 判断新功能是否可用；旧代码继续可用 |
+| **major**（1.x → 2.x） | HTTP 契约有**删除/变更** | 看 `min_client_version` 与本文件的 Removed 段，必要时提示用户升级面板 |
+
+实现建议（前端）：**只有 `compareVersions(CLIENT_VERSION, meta.min_client_version) < 0`
+才是"必须升级"的硬条件**；`api_version` 只比较 major.minor 做软提示。
+（面板当前是 `EXPECTED_API_VERSION = '1.4.0'` 全量比较，patch 差异也会报警，
+已开 issue：tyrantblue/terrWeb#1。）
+
+## 规则
 
 * **破坏性变更只在 major 版本做**，并且提前一个发布周期在本文件里给出 Sunset 日期。
 * 每条变更都要写清 `Added / Changed / Deprecated / Removed`，并给出 old → new 的迁移写法。
 * 旧接口与新接口**并行运行**；删除前先看弃用埋点数据（`/api/meta` 里会列出弃用项）。
+
+---
+
+## [1.4.2] — 2026-09-18
+
+HTTP 契约**没有变化**（patch）。加了一个主动探活，用来发现本轮真踩到的那类事故。
+
+### Added
+
+* **控制台心跳**：定时任务新增 `console`（默认每 60 秒，`SCHEDULE_CONSOLE_CHECK_SECONDS=0` 关闭）。
+  它会主动往 FIFO 发一条**哨兵**（裸 `kick`，无副作用），并根据结果区分三种情况：
+  * 有回显 → `ok`；
+  * FIFO 写不进去（服务端正在重启）→ `unavailable`，**不告警**；
+  * 写进去了但日志一直没有哨兵行 → `stalled`，说明**日志管道停更**
+    （表现为"游戏能玩、面板读不到状态"），发 `console_stalled` 事件到 webhook。
+  停滞告警有冷却（`CONSOLE_STALL_COOLDOWN`，默认 30 分钟），不会每分钟刷屏。
+
+  为什么不直接看"日志多久没更新"：没人在线、面板也没开的时候，日志本来就可以安静很久，
+  那样会误报；主动注入哨兵才能区分"服务端没事"和"管道停了"。
+  哨兵行会被控制台视图按文本过滤掉，所以探活不会污染面板与日志。
+
+* 任务状态照旧在 `GET /api/v1/scheduler` 里可见（`console` 任务的 `last_detail`
+  会显示 `ok` / `stalled: ...` / `unavailable: ...`）。
+
+### Fixed
+
+* `ConsoleTimeout` 是 `ConsoleUnavailable` 的子类，心跳的异常分支顺序必须先捕获前者，
+  否则"日志停更"会被误判成"服务端正在重启"而**漏报**。
+* 控制台锁文件所在目录不可用时（`control/` 不存在或不可写），
+  现在抛 `ConsoleUnavailable` 而不是裸 `OSError`。
+* 探活走新的 `ConsoleChannel.probe()`：**哨兵没出现就一定报错**，
+  不再走 `run()` 的"回退成返回部分输出"分支——否则日志只 flush 了一半
+  （有回显、没有哨兵行）会被误判成正常，恰好漏掉要抓的停更。
+* 重启/切世界（`EXCLUSIVE_KINDS`）在跑时跳过探活并返回 `unavailable`：
+  重启窗口内日志本来就会安静，直接探活会误报一次 `console_stalled`。
+
+### Internal
+
+* 测试 154 → **166**（新增 `test_console_health.py`，其中包含"日志停更"的模拟：
+  假服务端照收命令但不写日志；另有探活必须报错、重启中让路两个用例）。
 
 ---
 

@@ -1025,6 +1025,8 @@ surfaced under `/api/v1`.
 | `SCHEDULE_SAVE_SKIP_EMPTY` | `1` | skip saving when nobody is online |
 | `SCHEDULE_BACKUP_HOURS` | `6` | automatic backup interval (`0` = off) |
 | `SCHEDULE_BACKUP_KEEP` | `10` | keep the newest N backups (`pre-restore-*` is never pruned) |
+| `SCHEDULE_CONSOLE_CHECK_SECONDS` | `60` | console heartbeat: probe FIFO→log and alert when the log pipeline stalls (`0` = off) |
+| `CONSOLE_STALL_COOLDOWN` | `1800` | minimum seconds between two `console_stalled` alerts |
 | `SCHEDULE_RESTART_AT` | `05:00` | daily restart time, empty = off |
 | `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | skip the restart if players are online |
 | `SCHEDULE_RESTART_WARN_MINUTES` | `5` | broadcast a warning before restarting |
@@ -1059,7 +1061,7 @@ copy in `backup/pre-restore-<timestamp>/`. Restoring an inactive world just copi
 | `NOTIFY_EVENTS` | empty | comma separated allow-list, empty = all |
 
 Events: `player_join`, `player_leave`, `player_booted`, `server_up`, `server_error`,
-`backup_done`, `schedule_failed`, `restart_skipped`.
+`backup_done`, `schedule_failed`, `restart_skipped`, `console_stalled`.
 
 ```bash
 curl localhost:8080/api/v1/notifications

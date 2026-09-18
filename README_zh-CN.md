@@ -1029,6 +1029,8 @@ sudo /opt/terraria/guard/terraria-guard.sh remove     # 双保险
 | `SCHEDULE_SAVE_SKIP_EMPTY` | `1` | 没人在线就不保存 |
 | `SCHEDULE_BACKUP_HOURS` | `6` | 自动备份间隔（`0` = 关闭） |
 | `SCHEDULE_BACKUP_KEEP` | `10` | 只保留最近 N 份（`pre-restore-*` 永不清理） |
+| `SCHEDULE_CONSOLE_CHECK_SECONDS` | `60` | 控制台心跳：探活 FIFO→日志，日志管道停更时告警（`0` = 关闭） |
+| `CONSOLE_STALL_COOLDOWN` | `1800` | 两次 `console_stalled` 告警之间的最小间隔（秒） |
 | `SCHEDULE_RESTART_AT` | `05:00` | 每天重启时间，留空则关闭 |
 | `SCHEDULE_RESTART_SKIP_IF_PLAYERS` | `1` | 有人在线就跳过重启 |
 | `SCHEDULE_RESTART_WARN_MINUTES` | `5` | 重启前广播提醒 |
@@ -1063,7 +1065,7 @@ curl -X POST localhost:8080/api/v1/backups/auto:gogogo.wld.bak/restore  # 用游
 | `NOTIFY_EVENTS` | 空 | 逗号分隔的白名单，空 = 全部 |
 
 事件：`player_join`、`player_leave`、`player_booted`、`server_up`、`server_error`、
-`backup_done`、`schedule_failed`、`restart_skipped`。
+`backup_done`、`schedule_failed`、`restart_skipped`、`console_stalled`。
 
 ```bash
 curl localhost:8080/api/v1/notifications

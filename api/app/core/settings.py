@@ -38,7 +38,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 #: 对外 API 版本。与 api/openapi.json 快照、docs/api/CHANGELOG.md 对应。
 #: 破坏性变更必须升 major，并在这里改。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.4.1")
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "1.4.2")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
@@ -84,6 +84,10 @@ class Settings:
     schedule_backup_hours: float = _env_float("SCHEDULE_BACKUP_HOURS", 6)
     #: 只保留最近 N 份自动/手动备份（0 = 不清理），pre-restore 安全副本不受影响
     schedule_backup_keep: int = _env_int("SCHEDULE_BACKUP_KEEP", 10)
+    #: 控制台心跳间隔（秒，0 = 关闭）：定期发一条命令，用来发现"日志停更"
+    schedule_console_check_seconds: int = _env_int("SCHEDULE_CONSOLE_CHECK_SECONDS", 60)
+    #: 停滞告警的冷却时间（秒），避免每分钟都发通知
+    console_stall_cooldown: float = _env_float("CONSOLE_STALL_COOLDOWN", 1800.0)
     #: 每天几点定时重启（"05:00"；空 = 关闭）
     schedule_restart_at: str = os.environ.get("SCHEDULE_RESTART_AT", "")
     #: 有人在线时是否跳过定时重启

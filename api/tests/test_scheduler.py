@@ -52,9 +52,21 @@ def test_disabled_jobs_are_not_created(rt) -> None:
         schedule_save_minutes=0,
         schedule_backup_hours=0,
         schedule_restart_at="",
+        schedule_console_check_seconds=0,
         schedule_enabled=False,
     )
     assert build_job_specs(settings, rt.server, rt.world, rt.notifier) == []
+
+
+def test_console_heartbeat_job_is_on_by_default(rt) -> None:
+    settings = Settings(
+        schedule_save_minutes=0,
+        schedule_backup_hours=0,
+        schedule_restart_at="",
+        schedule_enabled=False,
+    )
+    specs = build_job_specs(settings, rt.server, rt.world, rt.notifier)
+    assert [spec.name for spec in specs] == ["console"]
 
 
 def test_daily_next_run_uses_configured_timezone(tmp_path) -> None:
