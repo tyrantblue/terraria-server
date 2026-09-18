@@ -197,6 +197,38 @@ def test_network_failure_becomes_qqbot_error() -> None:
         client.send_text("hi")
 
 
+# ---------------------------------------------------------------- 失效重试的两种信封
+def test_code_only_envelope_is_not_treated_as_success(qq_server) -> None:
+    """消息接口只回了 `code`（没有 `err_code`）时，11243 仍要触发换 token 重试。"""
+    _FakeQQ.message_payload = {"code": 11243, "message": "token 校验未通过"}
+
+    with pytest.raises(QQBotError) as excinfo:
+        make_client(qq_server).send_text("hi")
+    assert "11243" in str(excinfo.value)
+    assert len(_FakeQQ.messages) == 2, "只认 err_code 会把这种信封当成功"
+    assert _FakeQQ.token_requests >= 2
+
+
+def test_http_401_triggers_a_token_refresh(qq_server) -> None:
+    """HTTP 401/403 也是令牌失效；原先它在 _post_json 里就抛了，重试逻辑根本走不到。"""
+    _FakeQQ.message_status = 401
+    _FakeQQ.message_payload = {"code": 11243, "message": "token 校验未通过"}
+
+    with pytest.raises(QQBotError):
+        make_client(qq_server).send_text("hi")
+    assert len(_FakeQQ.messages) == 2, "HTTP 401 也应当换一次 token 重试"
+    assert _FakeQQ.token_requests >= 2
+
+
+def test_short_lived_token_is_still_cached(qq_server) -> None:
+    """`expires_in` 只有 60s 时，不能用固定 60s 的提前量把每个请求都变成换 token。"""
+    _FakeQQ.token_payload = {"access_token": "T1", "expires_in": 60}
+    client = make_client(qq_server)
+    client.send_text("第一条")
+    client.send_text("第二条")
+    assert _FakeQQ.token_requests == 1
+
+
 # ---------------------------------------------------------------- 与 Notifier 的整合
 def test_notifier_delivers_through_qq(qq_server, settings) -> None:
     from app.services.notifications import NotificationConfig, Notifier

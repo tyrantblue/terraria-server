@@ -9,6 +9,8 @@ operation 时用专用错误码 `operation_not_found`（区别于路由不存在
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Query
 
 from app.api.deps import RuntimeDep
@@ -16,11 +18,14 @@ from app.schemas.v1 import OperationList, OperationView
 
 router = APIRouter(prefix="/api/v1", tags=["v1:operations"])
 
+#: 与 services/operations.py 的四个状态一一对应；写错的值会得到 422，而不是空列表
+OperationState = Literal["pending", "running", "succeeded", "failed"]
+
 
 @router.get("/operations", response_model=OperationList)
 def list_operations(
     rt: RuntimeDep,
-    state: str | None = Query(
+    state: OperationState | None = Query(
         default=None,
         description="只返回该状态：pending | running | succeeded | failed",
     ),

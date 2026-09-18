@@ -2020,7 +2020,7 @@
   },
   "info": {
     "title": "Terraria Server API",
-    "version": "2.2.0"
+    "version": "2.2.1"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2729,7 +2729,7 @@
         ]
       },
       "put": {
-        "description": "改通知目标并立即生效（落盘 `control/notify.json`）。\n\n* `provider`：`auto` | `feishu` | `discord` | `slack` | `json` | `qq`；\n* webhook 类渠道需要 `url`；`qq` 需要 `qq.app_id` + `qq.client_secret` + `qq.channel_id`；\n* `events` 是逗号分隔白名单（空 = 全部），事件名写错会 **400** 而不是静默过滤；\n* 只改带来的字段：省略/`null` 保持原值，`\"\"` 清空，掩码表示\"不改\"。",
+        "description": "改通知目标并立即生效（落盘 `control/notify.json`）。\n\n* `provider`：`auto` | `feishu` | `discord` | `slack` | `json` | `qq` | `none`；\n* webhook 类渠道需要 `url`；`qq` 需要 `qq.app_id` + `qq.client_secret` + `qq.channel_id`；\n* `events` 是逗号分隔白名单（空 = 全部），事件名写错会 **400** 而不是静默过滤；\n* 只改带来的字段：省略/`null` 保持原值，`\"\"` 清空（`provider` 例外，传空等于保持），\n  掩码表示\"不改\"；URL 不合法一律 **400**，不会落盘。",
         "operationId": "update_notification_settings_api_v1_notifications_settings_put",
         "requestBody": {
           "content": {
@@ -2805,6 +2805,12 @@
             "schema": {
               "anyOf": [
                 {
+                  "enum": [
+                    "pending",
+                    "running",
+                    "succeeded",
+                    "failed"
+                  ],
                   "type": "string"
                 },
                 {

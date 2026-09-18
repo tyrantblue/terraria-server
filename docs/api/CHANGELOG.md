@@ -31,6 +31,69 @@
 
 ---
 
+## [2.2.1] — 2026-09-19
+
+**patch：修 2.2.0 通知配置的加固问题**（HTTP 契约的形状没变，但有三处行为收紧）。
+
+### Fixed
+
+* **畸形 webhook URL 不再把 API 搞挂**（高危）。`validate()` 以前只看 `http://` 前缀，
+  `PUT {"provider":"auto","url":"http://[::1"}` 会 **500 但照样落盘**，之后
+  `GET /api/v1/notifications` 永久 500；重启时 `Notifier.start()` 里
+  `mask_url()` 抛 `ValueError: Invalid IPv6 URL`，**API 直接起不来**。
+  现在 `url` / `qq.api_base` / `qq.token_url` 都会真正 `urlsplit()` 校验
+  （含全角斜杠、非法端口等），不合法 → **400 `bad_request`** 且**不落盘**；
+  `mask_url()` / `webhook_style()` 也各自兜住解析异常，坏文件顶多显示成 `…`。
+
+  ```jsonc
+  // PUT /api/v1/notifications/settings
+  { "provider": "auto", "url": "http://[::1" }
+  // 旧：500，文件已写坏  新：400 {"error":{"code":"bad_request","details":{"url":"http://[::1"}}}
+  ```
+
+* **掩码不再泄露 URL 里的 basic-auth**。`mask_url()` 以前用 `netloc`，
+  `https://botuser:s3cr3t-pass@hooks.example.com/…` 会把用户名密码原样回给
+  `GET /api/v1/notifications` 并写进日志。现在只输出 `hostname[:port]`；
+  `qq.api_base` / `qq.token_url` 也一并掩码（自建网关可能把凭据写进 URL），
+  且合并时把掩码当"不改"处理（面板「读→改→写」依然安全）。
+* **投递错误不再把凭据写进日志与 API 响应**。`http.client` 解析失败时会把
+  userinfo 的一半当端口打印（`InvalidURL("nonnumeric port: 's3cr3t-pass@host'")`），
+  这段文本以前会进 `deliveries[].error`。现在按该 URL 自己的 userinfo 脱敏。
+* **QQ 令牌失效的两条路径都能重试一次**：只返回 `{"code":11243}`（无 `err_code`）
+  的信封以前被当成功；HTTP 401/403 在 `_post_json()` 里直接抛，重试逻辑根本走不到，
+  且旧 token 一直留在缓存里。现在两种都触发一次 `force` 换 token 重试，
+  刷新失败时会先失效缓存。`expires_in` 很短时也不再每个请求换一次 token。
+* **`notify.json` 落盘并发安全 + 权限**：临时名不再是固定的 `.tmp`
+  （并发 PUT 会互相覆盖、`os.replace` 抛 `FileNotFoundError`），
+  文件以 **0600 创建并在 rename 之前**就是最终权限——旧写法 rename 之后才 chmod，
+  中间有一段可读窗口，进程在窗口内退出就永久停在 0644。
+  `PUT`/`DELETE` 的「读 → 合并 → 落盘」现在也在进程内串行。
+* **notifier 投递线程不再被未预期异常静默打死**：`_loop` 以前只把 `queue.get`
+  包在 try 里，一次 `ValueError` 就会终止线程（通知全停、无日志）。
+  载荷渲染与序列化也移进了 `_deliver_webhook()` 的 try。
+* `_check_feishu()` 收到 JSON 数组时按成功处理（以前是 `AttributeError`）。
+
+### Changed
+
+* `PUT /api/v1/notifications/settings` 的合并语义写死并统一：`events` 传 `""` =
+  全部事件；`provider` 传 `""` = **保持**（不会回落到 `auto`）。
+  `v1.md` 之前写的是「provider/events 传空都等于保持」，与代码和 2.2.0 的 CHANGELOG 矛盾。
+* `GET /api/v1/operations?state=` 现在校验取值（`pending|running|succeeded|failed`），
+  写错得到 **422**，而不是静默返回空列表。
+
+### Docs
+
+* `v1.md` §9 补上 URL 校验与掩码范围、事件表补 `test`；`roadmap.md` 的状态行从 2.0.0
+  更到 2.2.x（2.1.0/2.2.0 发布时漏改）。
+
+### Internal
+
+* 测试 309 → **328**：新增 `test_notification_robustness.py`（畸形 URL 不落盘、
+  坏文件不影响启动、掩码不泄露、0600 与原子写、并发保存、合并语义、投递错误脱敏、
+  投递线程存活、`state` 校验），QQ 侧补 `code` 信封 / HTTP 401 / 短有效期三个用例。
+
+---
+
 ## [2.2.0] — 2026-09-19
 
 **minor：通知目标可以配置了——飞书 / Discord / Slack / 通用 JSON / QQ 频道机器人。**

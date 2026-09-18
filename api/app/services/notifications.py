@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import threading
 import time
 import urllib.error
@@ -40,8 +41,49 @@ __all__ = [
     "Notifier",
     "mask_secret",
     "mask_url",
+    "redact_credentials",
     "secret_is_set",
 ]
+
+#: URL 里的 `user:pass@`（basic-auth 也是凭据，异常文本不能带着它进日志/API）。
+#: 两条规则：带 scheme 的整段 userinfo；以及 http.client 报错时那种**不带 scheme**
+#: 的裸 `user:pass@host`（`InvalidURL("nonnumeric port: 'pass@host'")`）。
+_URL_CREDENTIALS_RE = re.compile(r"(?i)\b([a-z][a-z0-9+.\-]*://)[^/@\s]+@")
+_BARE_CREDENTIALS_RE = re.compile(r"(?i)\b[a-z0-9._%+\-]+:[^/\s@]+@")
+
+
+def redact_credentials(text: str) -> str:
+    """剥掉文本里 URL 的 userinfo（带 scheme 与不带 scheme 两种写法）。"""
+    return _BARE_CREDENTIALS_RE.sub("", _URL_CREDENTIALS_RE.sub(r"\1", text))
+
+
+def redact_for_url(text: str, url: str) -> str:
+    """通用脱敏之外，再把**这个 URL 自己的** userinfo 抹掉。
+
+    为什么还需要这一步：`http.client` 解析失败时会把 userinfo 的一半当成"端口"
+    打印出来（`InvalidURL("nonnumeric port: 's3cr3t-pass@host'")`），
+    通用规则认不出没有 `user:` 前缀的那一半。
+    """
+    text = redact_credentials(text)
+    try:
+        netloc = urlsplit(url).netloc
+    except ValueError:
+        return text
+    userinfo, _, _host = netloc.rpartition("@")
+    if not userinfo:
+        return text
+    for piece in {userinfo, *userinfo.split(":", 1)}:
+        if len(piece) >= 3:
+            text = text.replace(piece, "***")
+    return text
+
+
+def _hostname(url: str) -> str:
+    """`urlsplit(url).hostname`，畸形 URL 返回 ""（绝不抛异常）。"""
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
 
 LEVEL_ICON = {
     "info": "ℹ️",
@@ -123,7 +165,7 @@ class NotificationConfig:
         provider = self.provider_name
         if provider not in ("auto",):
             return provider
-        host = urlsplit(self.url).netloc.lower()
+        host = _hostname(self.url)
         if "discord" in host:
             return "discord"
         if "slack" in host:
@@ -168,8 +210,9 @@ class NotificationConfig:
                 "client_secret_set": secret_is_set(self.qq_client_secret),
                 "channel_id": self.qq_channel_id,
                 "sandbox": self.qq_sandbox,
-                "api_base": self.qq_api_base,
-                "token_url": self.qq_token_url,
+                # 这两个是「高级覆盖」，自建网关时可能内嵌 basic-auth：同样只回主机名
+                "api_base": mask_url(self.qq_api_base) if masked else self.qq_api_base,
+                "token_url": mask_url(self.qq_token_url) if masked else self.qq_token_url,
             },
         }
 
@@ -181,6 +224,9 @@ def _check_feishu(body: str) -> tuple[bool, str | None]:
     try:
         payload = json.loads(body)
     except ValueError:
+        return True, None
+    if not isinstance(payload, dict):
+        # 有些网关会回 JSON 数组/字符串；那不是飞书的错误信封，按成功处理
         return True, None
     code = payload.get("code", payload.get("StatusCode", 0))
     if code in (0, None):
@@ -251,11 +297,14 @@ class Notifier:
         return self._config.webhook_style()
 
     def start(self) -> None:
-        if not self.enabled or (self._thread and self._thread.is_alive()):
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="notifier", daemon=True)
-        self._thread.start()
+        # 用锁保护「检查线程 → 起线程」：configure() 与 lifespan 可能并发进来，
+        # 否则会各起一个投递线程（只有最后一个能被 stop() join 到）。
+        with self._lock:
+            if not self.enabled or (self._thread and self._thread.is_alive()):
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, name="notifier", daemon=True)
+            self._thread.start()
         if self._config.is_qq:
             logger.info("notifier: 已启用（QQ 频道机器人，channel=%s）", self._config.qq_channel_id)
         else:
@@ -277,7 +326,11 @@ class Notifier:
             "format": self.effective_format,
             "url": mask_url(config.url),
             "url_set": secret_is_set(config.url),
-            "events": sorted(config.events.split(",")) if config.events.strip() else "all",
+            "events": (
+                sorted({item.strip() for item in config.events.split(",") if item.strip()})
+                if config.events.strip()
+                else "all"
+            ),
             "missing": config.missing(),
             "source": config.source,
             "qq": {
@@ -286,8 +339,9 @@ class Notifier:
                 "client_secret_set": secret_is_set(config.qq_client_secret),
                 "channel_id": config.qq_channel_id,
                 "sandbox": config.qq_sandbox,
-                "api_base": config.qq_api_base,
-                "token_url": config.qq_token_url,
+                # 与 as_dict() 一致：自建网关可能把 basic-auth 写进这两个 URL
+                "api_base": mask_url(config.qq_api_base),
+                "token_url": mask_url(config.qq_token_url),
             },
             "deliveries": deliveries,
         }
@@ -318,7 +372,12 @@ class Notifier:
                 event, title, detail, level = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            self._deliver(event, title, detail, level)
+            # _deliver 必须在 try 里：它内部会做 URL 解析 / JSON 序列化 / HTTP，
+            # 任何未预料的异常都会静默打死这个线程（通知全停且没有日志）。
+            try:
+                self._deliver(event, title, detail, level)
+            except Exception:  # noqa: BLE001 - 投递失败不能终结投递线程
+                logger.exception("notifier: 投递 %s 时发生未预期异常", event)
 
     def _deliver(self, event: str, title: str, detail: dict, level: str = "info") -> Delivery:
         config = self._config
@@ -336,16 +395,18 @@ class Notifier:
     def _deliver_webhook(
         self, config: NotificationConfig, event: str, title: str, detail: dict, level: str
     ) -> Delivery:
-        payload = self._payload(event, title, detail, level)
-        data = json.dumps(payload, ensure_ascii=False).encode()
-        request = urllib.request.Request(
-            config.url,
-            data=data,
-            method="POST",
-            headers={"Content-Type": "application/json", "User-Agent": "terraria-api/1.0"},
-        )
         delivery = Delivery(ts=time.time(), event=event, title=title, ok=False)
         try:
+            # 载荷渲染与序列化也放进 try：畸形 URL 会让 webhook_style() 抛异常，
+            # 不能让它逃出 _deliver（那会把投递线程打死，且什么都不记录）。
+            payload = self._payload(event, title, detail, level, config=config)
+            data = json.dumps(payload, ensure_ascii=False).encode()
+            request = urllib.request.Request(
+                config.url,
+                data=data,
+                method="POST",
+                headers={"Content-Type": "application/json", "User-Agent": "terraria-api/1.0"},
+            )
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 body = response.read().decode("utf-8", errors="replace")
                 delivery.status = response.status
@@ -356,7 +417,10 @@ class Notifier:
             delivery.status = exc.code
             delivery.error = f"HTTP {exc.code}"
         except Exception as exc:  # noqa: BLE001 - 通知失败不能影响主流程
-            delivery.error = str(exc)
+            # 异常文本里可能嵌着带 basic-auth 的 URL（httplib 会把 userinfo 的一半
+            # 当端口报出来），这段字符串会进日志、也会回给 GET /notifications，
+            # 必须先按这个 URL 的凭据脱敏。
+            delivery.error = redact_for_url(f"{type(exc).__name__}: {exc}", config.url)
         return delivery
 
     def _deliver_qq(
@@ -367,9 +431,13 @@ class Notifier:
             client = self._shared_qq_client(config)
             client.send_text(self._render_text(event, title, detail, level))
         except QQBotError as exc:
-            delivery.error = str(exc)
+            delivery.error = redact_for_url(
+                str(exc), config.qq_token_url or config.qq_api_base
+            )
         except Exception as exc:  # noqa: BLE001
-            delivery.error = f"{type(exc).__name__}: {exc}"
+            delivery.error = redact_for_url(
+                f"{type(exc).__name__}: {exc}", config.qq_token_url or config.qq_api_base
+            )
         else:
             delivery.status = 200
             delivery.ok = True
@@ -402,9 +470,19 @@ class Notifier:
                 text += f"\n{extra}"
         return text
 
-    def _payload(self, event: str, title: str, detail: dict, level: str) -> dict:  # noqa: D102
+    def _payload(
+        self,
+        event: str,
+        title: str,
+        detail: dict,
+        level: str,
+        *,
+        config: NotificationConfig | None = None,
+    ) -> dict:  # noqa: D102
         text = self._render_text(event, title, detail, level)
-        fmt = self.effective_format
+        # 用**本次投递**的配置而不是实时 self._config：运行中改配置时，
+        # 载荷风格不能和收件人 URL 对不上。
+        fmt = (config or self._config).webhook_style()
         if fmt == "discord":
             return {"content": text[:1900]}
         if fmt == "slack":

@@ -34,11 +34,28 @@ def mask_secret(value: object) -> str:
 
 
 def mask_url(url: str) -> str:
-    """只露出主机名——webhook URL 本身就是凭据，不能原样回给前端。"""
+    """只露出主机名——webhook URL 本身就是凭据，不能原样回给前端。
+
+    两个刻意的细节：
+
+    * 用 `hostname` 而不是 `netloc`：`netloc` 会带上 `user:pass@`，
+      而 basic-auth 的凭据和 URL 一样敏感（它会出现在 GET 响应与日志里）。
+    * 解析失败（畸形 URL，例如 `http://[::1` 或全角斜杠）时返回 `…`：
+      这个函数会被 `status()`、`start()` 和日志调用，绝不能因为一个写坏的
+      URL 就抛 `ValueError`——历史上它能让通知接口 500，并在重启时让 API 起不来。
+    """
     if not url:
         return ""
-    parts = urlsplit(url)
-    return f"{parts.scheme}://{parts.netloc}/{MASK_SUFFIX}" if parts.netloc else MASK_SUFFIX
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:
+        return MASK_SUFFIX
+    if not host:
+        return MASK_SUFFIX
+    ending = f":{port}" if port else ""
+    return f"{parts.scheme}://{host}{ending}/{MASK_SUFFIX}"
 
 
 def is_mask_like(value: object, *, current: str = "") -> bool:

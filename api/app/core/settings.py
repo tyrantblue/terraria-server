@@ -43,7 +43,8 @@ def _env_bool(name: str, default: bool) -> bool:
 #: 2.1.0：issue #9–#18 的集中处理——新增结构化文案字段与能力清单，
 #:        修正错误码/错误信封，并补上写操作限流、客户端版本门槛与可选的 API token。
 #: 2.2.0：通知目标可配置（飞书 / Discord / Slack / 通用 JSON / QQ 频道机器人）。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.2.0")
+#: 2.2.1：通知配置加固——畸形 URL 拒绝且不落盘、掩码不泄露凭据、落盘 0600 与并发安全。
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.2.1")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。

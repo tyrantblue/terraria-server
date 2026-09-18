@@ -56,11 +56,34 @@ class QQBotError(Exception):
     """QQ 开放平台返回的业务错误（或网络层错误）。"""
 
 
+class QQTokenExpired(QQBotError):
+    """access_token 失效（HTTP 401/403，或响应体里的 11241–11243）。
+
+    单独一个类型是为了让 `send_text()` 能「换一次 token 再重试一次」：
+    `_post_json()` 拿到 HTTPError 会直接抛，调用方本来看不到状态码。
+    """
+
+
+#: 令牌失效的业务码
+TOKEN_ERROR_CODES = frozenset({11241, 11242, 11243})
+
+
 def _as_int(value: object) -> int | None:
     try:
         return int(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _error_code(body: dict[str, object]) -> int | None:
+    """消息接口的错误码：优先 `err_code`，缺失时退回 `code`。
+
+    只看 `err_code` 会把 `{"code": 11243}` 这类信封当成成功——平台两种都发过。
+    """
+    code = _as_int(body.get("err_code"))
+    if code is None:
+        code = _as_int(body.get("code"))
+    return code
 
 
 class QQChannelClient:
@@ -88,6 +111,8 @@ class QQChannelClient:
         self._lock = threading.Lock()
         self._token: str | None = None
         self._token_expires_at = 0.0
+        #: 提前多久视为该换 token；`expires_in` 很短时按它的一半收窄
+        self._token_margin = TOKEN_REFRESH_MARGIN
 
     # -- 配置自检 -----------------------------------------------------
     @property
@@ -106,12 +131,15 @@ class QQChannelClient:
 
     # -- 令牌 ---------------------------------------------------------
     def token(self, *, force: bool = False) -> str:
-        """取 access_token，带缓存；临近过期（60s）会自动换新的。"""
+        """取 access_token，带缓存；临近过期（默认 60s）会自动换新的。"""
         with self._lock:
-            if (
-                not force
-                and self._token
-                and time.time() < self._token_expires_at - TOKEN_REFRESH_MARGIN
+            if force:
+                # 先失效：刷新失败时不要把旧 token 留在缓存里继续用
+                self._token = None
+                self._token_expires_at = 0.0
+            elif (
+                self._token
+                and time.time() < self._token_expires_at - self._token_margin
             ):
                 return self._token
 
@@ -129,6 +157,8 @@ class QQChannelClient:
         with self._lock:
             self._token = token
             self._token_expires_at = time.time() + max(60, expires)
+            # `expires_in` 本来就很短时，固定 60s 会让每个请求都重新换 token
+            self._token_margin = min(TOKEN_REFRESH_MARGIN, max(0.0, expires / 2))
         return token
 
     # -- 发送 ---------------------------------------------------------
@@ -144,32 +174,36 @@ class QQChannelClient:
             content = content[:MAX_CONTENT_CHARS] + "…"
 
         url = f"{self.api_base}/channels/{self.channel_id}/messages"
-        token = self.token()
-        body = self._post_json(
+        try:
+            body = self._post_message(url, content)
+        except QQTokenExpired:
+            # HTTP 401/403：换一次 token 再试一次
+            body = self._post_message(url, content, force_token=True)
+
+        code = _error_code(body)
+        if code in (None, 0):
+            return body
+        if code in ACCEPTED_AUDIT_CODES:
+            logger.info("qq: 消息已受理，等待平台审核（code=%s）", code)
+            return body
+        if code in TOKEN_ERROR_CODES:
+            # 业务码形式的令牌失效（响应体里的 code / err_code）
+            body = self._post_message(url, content, force_token=True)
+            code = _error_code(body)
+            if code in (None, 0) or code in ACCEPTED_AUDIT_CODES:
+                return body
+        raise QQBotError(
+            f"发送失败：code={code} {body.get('message') or ''}".strip()
+        )
+
+    def _post_message(
+        self, url: str, content: str, *, force_token: bool = False
+    ) -> dict[str, object]:
+        token = self.token(force=force_token)
+        return self._post_json(
             url,
             {"content": content},
             headers={"Authorization": f"QQBot {token}"},
-        )
-
-        err_code = _as_int(body.get("err_code"))
-        if err_code in (None, 0):
-            return body
-        if err_code in ACCEPTED_AUDIT_CODES:
-            logger.info("qq: 消息已受理，等待平台审核（err_code=%s）", err_code)
-            return body
-        # 令牌失效（401 / 11243 等）：换一次 token 重试一次
-        if err_code in (11241, 11242, 11243) or _as_int(body.get("code")) in (11241, 11242, 11243):
-            token = self.token(force=True)
-            body = self._post_json(
-                url,
-                {"content": content},
-                headers={"Authorization": f"QQBot {token}"},
-            )
-            err_code = _as_int(body.get("err_code"))
-            if err_code in (None, 0) or err_code in ACCEPTED_AUDIT_CODES:
-                return body
-        raise QQBotError(
-            f"发送失败：err_code={err_code} {body.get('message') or ''}".strip()
         )
 
     # -- HTTP ---------------------------------------------------------
@@ -195,6 +229,9 @@ class QQChannelClient:
             raw = exc.read().decode("utf-8", errors="replace")
             # 401/429/5xx：尽量把响应体里的错误码带出来
             detail = _extract_error(raw) or f"HTTP {exc.code}"
+            if exc.code in (401, 403):
+                # 令牌失效要单独抛：调用方据此换一次 token 重试一次
+                raise QQTokenExpired(detail) from exc
             raise QQBotError(detail) from exc
         except Exception as exc:  # noqa: BLE001 - 网络错误统一成 QQBotError
             raise QQBotError(f"{type(exc).__name__}: {exc}") from exc
