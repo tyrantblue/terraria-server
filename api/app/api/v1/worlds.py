@@ -16,6 +16,7 @@ from app.schemas.v1 import (
     RestoreRequest,
     UploadResponse,
     WorldListResponse,
+    operation_ref,
 )
 
 router = APIRouter(prefix="/api/v1", tags=["v1:worlds"])
@@ -56,8 +57,7 @@ def delete_world(file: str, rt: RuntimeDep) -> dict[str, object]:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def activate_world(file: str, rt: RuntimeDep) -> dict[str, object]:
-    operation = rt.world.activate(file)
-    return {"operation_id": operation.id, "state": operation.state, "kind": operation.kind}
+    return operation_ref(rt.world.activate(file))
 
 
 @router.post(
@@ -66,8 +66,7 @@ def activate_world(file: str, rt: RuntimeDep) -> dict[str, object]:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def backup_world(file: str, rt: RuntimeDep) -> dict[str, object]:
-    operation = rt.world.backup(file)
-    return {"operation_id": operation.id, "state": operation.state, "kind": operation.kind}
+    return operation_ref(rt.world.backup(file))
 
 
 @router.get("/backups", response_model=BackupListResponse)
@@ -88,4 +87,4 @@ def restore_backup(name: str, rt: RuntimeDep, request: RestoreRequest | None = N
     并在 backup/pre-restore-<时间戳>/ 留一份覆盖前的安全副本。
     """
     operation = rt.world.restore(name, request.file if request else None)
-    return {"operation_id": operation.id, "state": operation.state, "kind": operation.kind}
+    return operation_ref(operation)

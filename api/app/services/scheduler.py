@@ -14,6 +14,7 @@ roadmap 的第一优先级。设计取舍：
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -27,6 +28,67 @@ DAILY = "daily"
 
 #: runner 返回值：None 或字符串都会记进 last_detail
 Runner = "Callable[[], str | None]"
+
+#: `unavailable: <kind> 正在进行（<id>），跳过探活`
+_BUSY_RE = re.compile(r"^unavailable:\s*(?P<kind>[\w.]+)\s+正在进行（(?P<id>[^）]+)）")
+#: `skipped: 3 人在线`
+_PLAYERS_RE = re.compile(r"^skipped:\s*(?P<online>\d+)\s*人在线")
+#: `backup=20260917-170849 files=3 pruned=1`
+_BACKUP_RE = re.compile(r"^backup=(?P<backup>\S+)\s+files=(?P<files>\d+)\s+pruned=(?P<pruned>\d+)")
+
+
+def classify_detail(
+    detail: str | None, *, status: str = "succeeded"
+) -> tuple[str | None, dict[str, object]]:
+    """把 runner 的中文自由文案提升成稳定的 `(code, params)`（issue #18）。
+
+    面板不再需要 `detail.startsWith('stalled')` 这类字符串约定，也不再正则抠
+    operation id。`detail` 原样保留，作为面向人的回退文案。
+    """
+    if not detail:
+        return None, {}
+    text = detail.strip()
+    if not text:
+        return None, {}
+
+    if text.startswith("submitted"):
+        _, _, operation_id = text.partition(":")
+        return "submitted", {"operation_id": operation_id.strip()}
+    if text.startswith("stalled"):
+        return "stalled", {}
+    if text.startswith("unavailable"):
+        busy = _BUSY_RE.match(text)
+        if busy:
+            return "unavailable.busy", {
+                "kind": busy.group("kind"),
+                "operation_id": busy.group("id"),
+            }
+        return "unavailable.console", {}
+    if text.startswith("error"):
+        return "error", {}
+    if text.startswith("skipped"):
+        players = _PLAYERS_RE.match(text)
+        if players:
+            return "skipped.players_online", {"online": int(players.group("online"))}
+        if "控制台不可用" in text:
+            return "skipped.console_unavailable", {}
+        if "无人在线" in text:
+            return "skipped.no_players", {"online": 0}
+        return "skipped.other", {}
+    backup = _BACKUP_RE.match(text)
+    if backup:
+        return "backup.done", {
+            "backup": backup.group("backup"),
+            "files": int(backup.group("files")),
+            "pruned": int(backup.group("pruned")),
+        }
+    if text == "ok" or text.startswith("ok"):
+        return "ok", {}
+    if text == "saved":
+        return "ok", {}
+
+    fallback = {"succeeded": "ok", "skipped": "skipped.other"}.get(status, "error")
+    return fallback, {}
 
 
 @dataclass
@@ -56,6 +118,8 @@ class JobState:
     last_run: float | None = None
     last_status: str | None = None
     last_detail: str | None = None
+    last_code: str | None = None
+    last_params: dict[str, object] = field(default_factory=dict)
     run_count: int = 0
     skipped_count: int = 0
     failed_count: int = 0
@@ -125,6 +189,8 @@ class Scheduler:
                         "last_run": state.last_run,
                         "last_status": state.last_status,
                         "last_detail": state.last_detail,
+                        "last_code": state.last_code,
+                        "last_params": dict(state.last_params),
                         "run_count": state.run_count,
                         "skipped_count": state.skipped_count,
                         "failed_count": state.failed_count,
@@ -155,18 +221,30 @@ class Scheduler:
             logger.warning("scheduler: 任务 %s 失败: %s", spec.name, exc)
 
         finished = time.time()
-        entry = {
+        # 把「前缀 + 中文后缀」升级为稳定的 code/params（issue #18），
+        # 同时保持 detail / last_status 的现有语义不变。
+        code, params = classify_detail(detail, status=status)
+        entry: dict[str, object] = {
             "at": finished,
             "status": status,
             "detail": detail,
+            "code": code,
+            "params": params,
             "duration": round(finished - started, 3),
             "manual": manual,
         }
+        # issue #10：restart 类任务提交的是后台 operation，面板要拿**顶层**
+        # `submitted` 去轮询 /api/v1/operations/{id}，而不是立刻显示「已完成」。
+        if code == "submitted" and params.get("operation_id"):
+            entry["submitted"] = params["operation_id"]
+
         with self._lock:
             state = self.states[spec.name]
             state.last_run = finished
             state.last_status = status
             state.last_detail = detail
+            state.last_code = code
+            state.last_params = dict(params)
             state.run_count += 1
             if status == "skipped":
                 state.skipped_count += 1

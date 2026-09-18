@@ -40,17 +40,20 @@ def _env_bool(name: str, default: bool) -> bool:
 #: 破坏性变更必须升 major，并在这里改。
 #: 2.0.0：删除旧 `/api/*` 资源路由，并把 GET 配置里的明文密码改成掩码。
 #: 2.0.1：审计 `?tail=N` 的内存兜底顺序、并发上传的 `.part` 命名（HTTP 契约不变）。
-API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.0.1")
+#: 2.1.0：issue #9–#18 的集中处理——新增结构化文案字段与能力清单，
+#:        修正错误码/错误信封，并补上写操作限流、客户端版本门槛与可选的 API token。
+API_VERSION = os.environ.get("TERRARIA_API_VERSION", "2.1.0")
 
 #: 日志行首时间戳所用时区（与 terraria 容器的 TZ 一致）。
 #: 必须显式带上，否则 naive datetime 会按进程本地时区解释，ts 会整体偏移。
 LOG_TIMEZONE = os.environ.get("TERRARIA_LOG_TZ", os.environ.get("TZ", "Asia/Shanghai"))
 
 #: 前端构建时对应的 API 版本；后端比它高太多时前端应提示用户刷新面板。
-#: 2.0.0 起旧 `/api/*` 已删除，只有迁完 v1 的面板（1.4.0+）能正常工作，
-#: 所以这里从 1.0.0 提到 1.4.0：更旧的面板会在握手上收到明确的升级提示，
-#: 而不是运行到一半遇到 404。
-MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.4.0")
+#: 2.0.0 起旧 `/api/*` 已删除，只有迁完 v1 的面板（1.4.0+）能正常工作。
+#: 2.1.0 起对**低于此版本**的 `X-Client-Version` 直接拒绝（issue #17.3）：
+#: 1.4.0 只能保证走 v1，1.4.1 才是采用 2.0 密码语义的面板版本
+#: （「留空=不修改」+ `PUT /api/v1/config` 不自动重试，见 issue #6/#9）。
+MIN_CLIENT_VERSION = os.environ.get("TERRARIA_MIN_CLIENT_VERSION", "1.4.1")
 
 
 @dataclass(frozen=True)
@@ -125,6 +128,24 @@ class Settings:
     metrics_interval_seconds: float = _env_float("METRICS_INTERVAL_SECONDS", 60.0)
     #: 内存里保留多少个采样点（默认 1440 = 1 分钟粒度下的 24 小时）
     metrics_retention_points: int = _env_int("METRICS_RETENTION_POINTS", 1440)
+
+    # -- 安全加固（issue #17） -------------------------------------------
+    #: 允许跨域访问的来源，逗号分隔；默认 `*` 以兼容现有面板，
+    #: 但生产部署应收敛为面板实际来源（见 docs/api/v1.md §0 与 README「安全」）。
+    cors_origins: str = os.environ.get("TERRARIA_CORS_ORIGINS", "*")
+    #: 可选的共享 token：非空时，写操作（POST/PUT/PATCH/DELETE）必须带
+    #: `Authorization: Bearer <token>`（或 `X-API-Token`）。空 = 不启用。
+    #: 边缘已有 Cloudflare Access / VPN 时可以留空。
+    api_token: str = os.environ.get("TERRARIA_API_TOKEN", "")
+    #: 写操作限流开关与阈值（每分钟 / 每客户端；0 = 不限流）。
+    rate_limit_enabled: bool = _env_bool("TERRARIA_RATE_LIMIT_ENABLED", True)
+    rate_limit_write_per_minute: int = _env_int("TERRARIA_RATE_LIMIT_WRITE_PER_MINUTE", 120)
+    rate_limit_console_per_minute: int = _env_int(
+        "TERRARIA_RATE_LIMIT_CONSOLE_PER_MINUTE", 60
+    )
+    rate_limit_restart_per_minute: int = _env_int(
+        "TERRARIA_RATE_LIMIT_RESTART_PER_MINUTE", 12
+    )
 
     @property
     def fifo(self) -> Path:

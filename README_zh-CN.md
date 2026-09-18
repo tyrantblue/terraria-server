@@ -491,7 +491,11 @@ curl https://terraria-api.tyrantblue.xyz/api/health
 
 **2.0.0（2026-09-19）删除了旧的 `/api/*` 路由**：面板（`tyrantblue/terrWeb` 1.4.0）
 已全量迁移，契约快照里也不再有任何旧路径。`/api/meta` 仍会返回 `min_client_version`
-（现在是 `1.4.0`），所以旧面板会在握手上拿到明确的「请升级」提示，而不是运行到一半 404。
+（现在是 `1.4.1`），所以旧面板会在握手上拿到明确的「请升级」提示，而不是运行到一半 404；
+并且 **2.1.0 起服务端会强制它**：带更低 `X-Client-Version` 的请求直接返回 426
+`client_outdated`（见 §29.6）。2.1.0 还新增了结构化 operation 文案
+（`message_code` / `message_params`）、带 `capability_since` 的完整能力清单、
+写操作限流与可选的写 token。
 
 | 文档 | 内容 |
 | --- | --- |
@@ -1145,3 +1149,26 @@ API 与守卫都能解析**有/无**时间戳两种格式，所以把 `start.sh`
 ```bash
 curl -s 'localhost:8080/api/v1/metrics?minutes=60' | jq '.latest'
 ```
+
+## 29.6 API 侧安全加固
+
+API 假定鉴权在边缘完成（Cloudflare Access / VPN / 受限反向代理）。如果边缘没有，
+后端提供这些可选的进程内保护（参考 `docs/api/v1.md` §0）：
+
+| 环境变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `TERRARIA_API_TOKEN` | 空 | 非空即启用共享 token：写方法（POST/PUT/PATCH/DELETE）必须带 `Authorization: Bearer <token>` 或 `X-API-Token`，否则 **401** `unauthorized`。GET 不受影响。 |
+| `TERRARIA_CORS_ORIGINS` | `*` | 逗号分隔的允许来源；生产环境应收敛为面板实际来源。无论如何都会 `expose` 回显头 `X-Client-Version`。 |
+| `TERRARIA_RATE_LIMIT_ENABLED` | `1` | 是否启用写操作限流（进程内 60 秒滑动窗口）。 |
+| `TERRARIA_RATE_LIMIT_WRITE_PER_MINUTE` | `120` | 普通写操作上限（每客户端）。 |
+| `TERRARIA_RATE_LIMIT_CONSOLE_PER_MINUTE` | `60` | `POST /api/v1/console/commands` 的上限。 |
+| `TERRARIA_RATE_LIMIT_RESTART_PER_MINUTE` | `12` | `POST /api/v1/server/restart` 的上限。 |
+
+* 超限返回 **429** `too_many_requests`，并带 `Retry-After` 头。
+* 带 `X-Client-Version` 且**低于** `min_client_version`（当前 `1.4.1`）的请求返回
+  **426** `client_outdated`；`/api/meta` 与 `/api/health` 除外，好让老面板仍能通过
+  握手知道自己该升级。不带头（脚本/curl）不拦。
+* 限流器是**进程内**的：多副本部署需要共享存储。
+* `POST /api/v1/server/restart` 只对正在运行的游戏服有效（要写控制台 FIFO）。
+  已经退出的容器请用 `docker compose restart terraria` 拉起。
+

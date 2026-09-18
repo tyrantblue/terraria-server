@@ -36,7 +36,8 @@ RESTART_MARKER = "Listening on port"
 class ServerSnapshot:
     """与旧 /api/server/status 响应一一对应的领域对象。"""
 
-    running: bool = True
+    #: 真实探测结果（能否读到控制台回显），不再是硬编码的 True（issue #11）
+    running: bool = False
     version: str | None = None
     port: int | None = None
     max_players: int | None = None
@@ -69,6 +70,8 @@ class StatusCollector:
         self._static_at = 0.0
         self._dynamic_at = 0.0
         self._log_cursor: int | None = None
+        #: 最近一次控制台探测是否成功（issue #11：running 必须反映真实状态）
+        self._running = False
 
     # -- 对外 ---------------------------------------------------------
     def invalidate(self, *, static: bool = True, dynamic: bool = True) -> None:
@@ -110,6 +113,7 @@ class StatusCollector:
     # -- 内部 ---------------------------------------------------------
     def _snapshot(self) -> ServerSnapshot:
         return ServerSnapshot(
+            running=self._running,
             version=self._static.get("version"),  # type: ignore[arg-type]
             port=self._static.get("port"),  # type: ignore[arg-type]
             max_players=self._static.get("max_players"),  # type: ignore[arg-type]
@@ -130,13 +134,16 @@ class StatusCollector:
                 "motd": parse_motd(self._channel.run("motd")),
             }
         except Exception:
+            # 控制台探测失败 = 服务端当前不可用（issue #11：running 要如实反映）
+            self._running = False
             # 服务端正在重启/控制台不可用时，尽量返回上一次的缓存值；
-            # 完全没有缓存才把错误抛给调用方。
+            # 完全没有缓存才把错误抛给调用方（API 层会兜成 200 + running=false）。
             if not self._static:
                 raise
             return
         self._static = static
         self._static_at = time.monotonic()
+        self._running = True
 
     def _refresh_dynamic(self) -> None:
         try:
@@ -145,6 +152,7 @@ class StatusCollector:
             players = parse_players(playing)
             entries = parse_player_entries(playing)
         except Exception:
+            self._running = False
             if not self._dynamic_at:
                 raise
             return
@@ -152,6 +160,7 @@ class StatusCollector:
         self._players = players
         self._player_entries = entries
         self._dynamic_at = time.monotonic()
+        self._running = True
 
     def _watch_log(self) -> None:
         """日志被截断、或出现「重新监听」时，说明服务端重启过 → 缓存作废。"""

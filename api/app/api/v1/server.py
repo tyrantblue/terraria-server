@@ -23,20 +23,30 @@ from app.schemas.v1 import (
     ServerState,
     TimeRequest,
     TimeResponse,
+    operation_ref,
 )
 from app.services import config_service
+from app.services.status import ServerSnapshot
 
 router = APIRouter(prefix="/api/v1", tags=["v1:server"])
 
 
 def _server_state(rt: RuntimeDep) -> dict[str, object]:
-    snapshot = rt.server.status()
+    # 控制台不可用且没有缓存时，StatusCollector.get() 会抛异常。以前这会变成
+    # 500，面板显示 "API Unreachable"——其实 API 好得很，是游戏服停了
+    # （issue #11）。现在兜成 200 + running=false + 读不到的字段为 null。
+    try:
+        snapshot = rt.server.status()
+    except Exception:  # noqa: BLE001 - 任何探测失败都降级成「未运行」
+        snapshot = ServerSnapshot(running=False)
+    running = snapshot.running
+
     worlds, active = rt.world.list()
     world = next((item for item in worlds if item["file"] == active), None)
     config = rt.config.load()
-    log_stalled, log_age = rt.server.log_health(running=snapshot.version is not None)
+    log_stalled, log_age = rt.server.log_health(running=running)
     return {
-        "running": snapshot.running,
+        "running": running,
         "version": snapshot.version,
         "port": snapshot.port,
         "max_players": snapshot.max_players,
@@ -83,12 +93,7 @@ def server_action(request: ActionRequest, rt: RuntimeDep) -> dict[str, object]:
     status_code=status.HTTP_202_ACCEPTED,
 )
 def restart_server(rt: RuntimeDep) -> dict[str, object]:
-    operation = rt.server.restart()
-    return {
-        "operation_id": operation.id,
-        "state": operation.state,
-        "kind": operation.kind,
-    }
+    return operation_ref(rt.server.restart())
 
 
 @router.post("/server/time", response_model=TimeResponse)

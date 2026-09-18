@@ -168,9 +168,24 @@ def test_reload(client, guard) -> None:
 
 
 def test_bad_ip_is_rejected(client, guard) -> None:
-    assert client.post("/api/v1/guard/bans", json={"ip": "not-an-ip"}).status_code == 503
-    assert client.post("/api/v1/guard/allow", json={"ip": "1.2.3.4; rm -rf /"}).status_code == 503
+    """issue #16.4：输入非法是 400 bad_request，不能报成「守卫没运行」。"""
+    rejected = client.post("/api/v1/guard/bans", json={"ip": "not-an-ip"})
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "bad_request"
+    assert rejected.json()["error"]["details"]["ip"] == "not-an-ip"
+
+    injected = client.post("/api/v1/guard/allow", json={"ip": "1.2.3.4; rm -rf /"})
+    assert injected.status_code == 400
+    # 超出 0..255 的点分十进制同样按输入错误处理
+    assert client.delete("/api/v1/guard/bans/999.1.1.1").status_code == 400
     assert guard.commands == []
+
+
+def test_guard_unavailable_is_still_503(client) -> None:
+    """守卫进程/控制文件确实不可用时才是 503 guard_unavailable。"""
+    response = client.post("/api/v1/guard/bans", json={"ip": "198.51.100.8"})
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "guard_unavailable"
 
 
 def test_missing_guard_returns_503(rt) -> None:

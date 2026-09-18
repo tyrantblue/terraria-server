@@ -480,7 +480,11 @@ Expected response:
 **2.0.0 (2026-09-19) removed the legacy `/api/*` routes.** `/api/v1` is now the only
 surface — the panel (`tyrantblue/terrWeb` 1.4.0) had fully migrated, and the contract
 snapshot shows no legacy paths left. `/api/meta` still reports `min_client_version`
-(now `1.4.0`), so an older panel gets a clear "upgrade me" handshake instead of 404s.
+(now `1.4.1`), so an older panel gets a clear "upgrade me" handshake instead of 404s —
+and since **2.1.0 the server enforces it**: requests carrying a lower `X-Client-Version`
+are rejected with 426 `client_outdated` (see §29.6). 2.1.0 also adds structured operation
+message codes (`message_code` / `message_params`), a complete `capabilities` list with
+`capability_since`, write rate limiting and an optional write token.
 
 | Document | Contents |
 | --- | --- |
@@ -1136,3 +1140,29 @@ panel, not long-term monitoring storage.
 ```bash
 curl -s 'localhost:8080/api/v1/metrics?minutes=60' | jq '.latest'
 ```
+
+## 29.6 API security hardening
+
+The API is designed to sit behind edge authentication (Cloudflare Access / VPN / a
+restricted reverse proxy). For deployments without one, the backend offers these optional
+in-process protections (reference: `docs/api/v1.md` §0):
+
+| Env var | Default | Meaning |
+| --- | --- | --- |
+| `TERRARIA_API_TOKEN` | empty | non-empty enables a shared token: write methods (POST/PUT/PATCH/DELETE) must send `Authorization: Bearer <token>` or `X-API-Token`, otherwise **401** `unauthorized`. GET is unaffected. |
+| `TERRARIA_CORS_ORIGINS` | `*` | comma separated allowed origins; narrow it to the panel origin in production. `X-Client-Version` is exposed either way. |
+| `TERRARIA_RATE_LIMIT_ENABLED` | `1` | enable the in-process write rate limiter (60s sliding window). |
+| `TERRARIA_RATE_LIMIT_WRITE_PER_MINUTE` | `120` | general write limit per client. |
+| `TERRARIA_RATE_LIMIT_CONSOLE_PER_MINUTE` | `60` | limit for `POST /api/v1/console/commands`. |
+| `TERRARIA_RATE_LIMIT_RESTART_PER_MINUTE` | `12` | limit for `POST /api/v1/server/restart`. |
+
+* Exceeding a limit returns **429** `too_many_requests` with a `Retry-After` header.
+* A request that carries `X-Client-Version` **below** `min_client_version` (currently
+  `1.4.1`) is rejected with **426** `client_outdated`, except `/api/meta` and
+  `/api/health` — so an old panel can still learn that it must upgrade. Requests without
+  the header (scripts, curl) are not gated.
+* The rate limiter is **per-process**: multi-replica deployments need shared storage.
+* `POST /api/v1/server/restart` only works while the game server is running (it writes to
+  the console FIFO). To bring back an already-exited container use
+  `docker compose restart terraria`.
+

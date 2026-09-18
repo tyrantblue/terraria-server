@@ -20,11 +20,20 @@ import time
 import uuid
 from pathlib import Path
 
+from app.core.errors import BadRequest
+
 logger = logging.getLogger(__name__)
 
 #: 状态多久没更新就算守卫不在（秒）
 STALE_AFTER = 30.0
 IP_RE = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def is_valid_ipv4(value: str) -> bool:
+    """点分十进制 IPv4，且每段 0..255。"""
+    if not IP_RE.match(value):
+        return False
+    return all(0 <= int(part) <= 255 for part in value.split("."))
 
 
 class GuardUnavailable(Exception):
@@ -71,10 +80,13 @@ class GuardClient:
         args = args or {}
         ip = str(args.get("ip") or "").strip()
         if action != "reload":
+            # 输入非法是调用方的错（400），只有守卫进程/控制文件不可用才是 503。
+            # 以前两种都抛 GuardUnavailable，面板会把「IP 打错了」显示成
+            # 「守卫没在运行」，让人去排查一个不存在的问题（issue #16.4）。
             if not ip:
-                raise GuardUnavailable("缺少 ip")
-            if not IP_RE.match(ip):
-                raise GuardUnavailable(f"ip 格式不对: {ip}")
+                raise BadRequest("缺少 ip", details={"ip": ip})
+            if not is_valid_ipv4(ip):
+                raise BadRequest(f"ip 格式不对: {ip}", details={"ip": ip})
 
         command_id = uuid.uuid4().hex[:12]
         payload = {

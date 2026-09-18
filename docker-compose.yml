@@ -72,6 +72,16 @@ services:
       NOTIFY_WEBHOOK_URL: "${NOTIFY_WEBHOOK_URL:-}"
       NOTIFY_FORMAT: "${NOTIFY_FORMAT:-auto}"   # auto | discord | slack | feishu | json
       NOTIFY_EVENTS: "${NOTIFY_EVENTS:-}"       # 逗号分隔；空 = 全部
+      # ---- 安全加固（issue #17）----
+      # 写操作共享 token：留空 = 关闭（边缘已有 Access/VPN 时保持关闭）
+      TERRARIA_API_TOKEN: "${TERRARIA_API_TOKEN:-}"
+      # 允许跨域的来源，逗号分隔；默认 * 兼容现有面板，生产建议收敛
+      TERRARIA_CORS_ORIGINS: "${TERRARIA_CORS_ORIGINS:-*}"
+      # 写操作限流（每分钟 / 每客户端；0 = 不限流）
+      TERRARIA_RATE_LIMIT_ENABLED: "1"
+      TERRARIA_RATE_LIMIT_WRITE_PER_MINUTE: "120"
+      TERRARIA_RATE_LIMIT_CONSOLE_PER_MINUTE: "60"
+      TERRARIA_RATE_LIMIT_RESTART_PER_MINUTE: "12"
 
   # ---------------------------------------------------------------------------
   # 连接守卫：把扫描/探测连接挡在 7777 之外，并在“假满员”时自动恢复。

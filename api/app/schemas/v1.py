@@ -20,20 +20,43 @@ class OkResponse(BaseModel):
 
 
 class OperationRef(BaseModel):
-    """202 响应：去 GET /api/v1/operations/{id} 查进度。"""
+    """202 响应：去 `poll` 指向的地址查进度。
+
+    `poll` 是**按请求生成的真实 URL**（如 `/api/v1/operations/8f3c…`），
+    不再是未替换的模板字符串 `/api/v1/operations/{operation_id}`（issue #16.2）。
+    面板也可以继续用 `operation_id` 自己拼。
+    """
 
     operation_id: str
     state: str
     kind: str
-    poll: str = "/api/v1/operations/{operation_id}"
+    poll: str
+
+
+def operation_ref(operation: Any) -> dict[str, Any]:
+    """把 Operation 转成 202 响应体，并生成真实的 `poll` URL（issue #16.2）。"""
+    return {
+        "operation_id": operation.id,
+        "state": operation.state,
+        "kind": operation.kind,
+        "poll": f"/api/v1/operations/{operation.id}",
+    }
 
 
 class OperationView(BaseModel):
+    """`message` 是中文自由文本回退；程序判断请用 `message_code` / `state`（issue #18）。"""
+
     id: str
     kind: str
+    #: kind 的人读标签（后端发布词汇表，面板不必硬编码映射）
+    kind_label: str
     state: str
     progress: int
     message: str
+    #: 稳定标识，如 `restart.stopping_server`；pending/running/succeeded/failed 也有值
+    message_code: str
+    #: 与 message_code 配套的参数，如 {"file": "gogogo.wld"}
+    message_params: dict[str, Any] = Field(default_factory=dict)
     created_at: float
     started_at: float | None
     finished_at: float | None
@@ -43,6 +66,8 @@ class OperationView(BaseModel):
 
 class OperationList(BaseModel):
     operations: list[OperationView]
+    #: 还在 pending/running 的数量——Dashboard 不必拉全量再自己数
+    in_flight: int = 0
 
 
 # ---------------------------------------------------------------- server
@@ -245,9 +270,20 @@ class UploadResponse(BaseModel):
 
 # ---------------------------------------------------------------- scheduler
 class JobRun(BaseModel):
+    """一次任务执行的结果。
+
+    `detail` 是面向人的中文回退文案（不保证稳定）；`code` / `params` 才是
+    给面板做程序判断的稳定字段（issue #18）。`code` 覆盖现有前缀：
+    `ok` / `stalled` / `unavailable.busy` / `unavailable.console` / `error` /
+    `skipped.no_players` / `skipped.players_online` / `skipped.console_unavailable` /
+    `submitted` / `backup.done`。
+    """
+
     at: float
     status: str            # succeeded | skipped | failed
     detail: str | None = None
+    code: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)
     duration: float
     manual: bool
 
@@ -263,6 +299,9 @@ class SchedulerJob(BaseModel):
     last_run: float | None = None
     last_status: str | None = None
     last_detail: str | None = None
+    #: 与 last_detail 对应的结构化字段
+    last_code: str | None = None
+    last_params: dict[str, Any] = Field(default_factory=dict)
     run_count: int = 0
     skipped_count: int = 0
     failed_count: int = 0

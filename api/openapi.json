@@ -713,10 +713,22 @@
         "type": "object"
       },
       "JobRun": {
+        "description": "一次任务执行的结果。\n\n`detail` 是面向人的中文回退文案（不保证稳定）；`code` / `params` 才是\n给面板做程序判断的稳定字段（issue #18）。`code` 覆盖现有前缀：\n`ok` / `stalled` / `unavailable.busy` / `unavailable.console` / `error` /\n`skipped.no_players` / `skipped.players_online` / `skipped.console_unavailable` /\n`submitted` / `backup.done`。",
         "properties": {
           "at": {
             "title": "At",
             "type": "number"
+          },
+          "code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code"
           },
           "detail": {
             "anyOf": [
@@ -736,6 +748,11 @@
           "manual": {
             "title": "Manual",
             "type": "boolean"
+          },
+          "params": {
+            "additionalProperties": true,
+            "title": "Params",
+            "type": "object"
           },
           "status": {
             "title": "Status",
@@ -787,6 +804,13 @@
             "title": "Capabilities",
             "type": "array"
           },
+          "capability_since": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Capability Since",
+            "type": "object"
+          },
           "deprecations": {
             "items": {
               "additionalProperties": true,
@@ -795,12 +819,26 @@
             "title": "Deprecations",
             "type": "array"
           },
+          "exclusive_operation_kinds": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclusive Operation Kinds",
+            "type": "array"
+          },
           "links": {
             "$ref": "#/components/schemas/MetaLinks"
           },
           "min_client_version": {
             "title": "Min Client Version",
             "type": "string"
+          },
+          "operation_kinds": {
+            "items": {
+              "$ref": "#/components/schemas/OperationKindInfo"
+            },
+            "title": "Operation Kinds",
+            "type": "array"
           },
           "server_version": {
             "anyOf": [
@@ -1020,8 +1058,32 @@
         "title": "OkResponse",
         "type": "object"
       },
+      "OperationKindInfo": {
+        "description": "后端自己发布自己的词汇表，面板不必硬编码 kind → 文案（issue #18）。",
+        "properties": {
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label"
+        ],
+        "title": "OperationKindInfo",
+        "type": "object"
+      },
       "OperationList": {
         "properties": {
+          "in_flight": {
+            "default": 0,
+            "title": "In Flight",
+            "type": "integer"
+          },
           "operations": {
             "items": {
               "$ref": "#/components/schemas/OperationView"
@@ -1037,7 +1099,7 @@
         "type": "object"
       },
       "OperationRef": {
-        "description": "202 响应：去 GET /api/v1/operations/{id} 查进度。",
+        "description": "202 响应：去 `poll` 指向的地址查进度。\n\n`poll` 是**按请求生成的真实 URL**（如 `/api/v1/operations/8f3c…`），\n不再是未替换的模板字符串 `/api/v1/operations/{operation_id}`（issue #16.2）。\n面板也可以继续用 `operation_id` 自己拼。",
         "properties": {
           "kind": {
             "title": "Kind",
@@ -1048,7 +1110,6 @@
             "type": "string"
           },
           "poll": {
-            "default": "/api/v1/operations/{operation_id}",
             "title": "Poll",
             "type": "string"
           },
@@ -1060,12 +1121,14 @@
         "required": [
           "operation_id",
           "state",
-          "kind"
+          "kind",
+          "poll"
         ],
         "title": "OperationRef",
         "type": "object"
       },
       "OperationView": {
+        "description": "`message` 是中文自由文本回退；程序判断请用 `message_code` / `state`（issue #18）。",
         "properties": {
           "created_at": {
             "title": "Created At",
@@ -1101,9 +1164,22 @@
             "title": "Kind",
             "type": "string"
           },
+          "kind_label": {
+            "title": "Kind Label",
+            "type": "string"
+          },
           "message": {
             "title": "Message",
             "type": "string"
+          },
+          "message_code": {
+            "title": "Message Code",
+            "type": "string"
+          },
+          "message_params": {
+            "additionalProperties": true,
+            "title": "Message Params",
+            "type": "object"
           },
           "progress": {
             "title": "Progress",
@@ -1140,9 +1216,11 @@
         "required": [
           "id",
           "kind",
+          "kind_label",
           "state",
           "progress",
           "message",
+          "message_code",
           "created_at",
           "started_at",
           "finished_at",
@@ -1273,6 +1351,17 @@
             "title": "Kind",
             "type": "string"
           },
+          "last_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Code"
+          },
           "last_detail": {
             "anyOf": [
               {
@@ -1283,6 +1372,11 @@
               }
             ],
             "title": "Last Detail"
+          },
+          "last_params": {
+            "additionalProperties": true,
+            "title": "Last Params",
+            "type": "object"
           },
           "last_run": {
             "anyOf": [
@@ -1731,7 +1825,7 @@
   },
   "info": {
     "title": "Terraria Server API",
-    "version": "2.0.1"
+    "version": "2.1.0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -2444,6 +2538,26 @@
     "/api/v1/operations": {
       "get": {
         "operationId": "list_operations_api_v1_operations_get",
+        "parameters": [
+          {
+            "description": "只返回该状态：pending | running | succeeded | failed",
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "只返回该状态：pending | running | succeeded | failed",
+              "title": "State"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "content": {
@@ -2454,6 +2568,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
           }
         },
         "summary": "List Operations",

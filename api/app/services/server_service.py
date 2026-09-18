@@ -12,7 +12,13 @@ from __future__ import annotations
 
 import time
 
-from app.core.errors import BadRequest, Conflict, ConsoleTimeout, ConsoleUnavailable
+from app.core.errors import (
+    AppError,
+    BadRequest,
+    Conflict,
+    ConsoleTimeout,
+    ConsoleUnavailable,
+)
 from app.services import config_service
 from app.services.config_service import ConfigService
 from app.services.console.channel import ConsoleChannel
@@ -243,10 +249,19 @@ class ServerService:
         return f"submitted: {operation.id}"
 
     def _restart_job(self, progress) -> dict[str, object]:
-        progress(5, "正在保存世界")
-        self._channel.send("save")
+        progress(5, "正在保存世界", "restart.saving_world")
+        try:
+            self._channel.send("save")
+        except ConsoleUnavailable as exc:
+            # 服务端已经退出时 FIFO 没有读者，这里给一条可操作的错误，而不是
+            # 让面板看到裸的 ENXIO（issue #11 附加项：restart 只对运行中的进程有效）。
+            raise ConsoleUnavailable(
+                "服务端当前未在运行，无法通过 API 重启；"
+                "请用 `docker compose restart terraria` 拉起后再操作。"
+                f"（{exc}）"
+            ) from exc
         time.sleep(SAVE_GRACE)
-        progress(25, "正在关闭服务端")
+        progress(25, "正在关闭服务端", "restart.stopping_server")
         self._channel.send("exit")
         self._wait_until_up(progress)
         return {"restarted": True}
@@ -259,12 +274,12 @@ class ServerService:
             try:
                 if "Terraria Server" in self._channel.run("version", timeout=2.0):
                     self._status.invalidate()
-                    progress(95, "服务端已恢复")
+                    progress(95, "服务端已恢复", "restart.server_up")
                     return
             except Exception:  # noqa: BLE001 - 重启窗口内允许失败
                 pass
             step += 1
-            progress(min(90, 30 + step * 5), "等待服务端重新监听")
+            progress(min(90, 30 + step * 5), "等待服务端重新监听", "restart.waiting_listen")
             time.sleep(1)
         raise TimeoutError(f"服务端在 {int(timeout)} 秒内没有恢复")
 
@@ -294,40 +309,62 @@ class ServerService:
             )
 
         before = self._config.load()
-        changed = {k: v for k, v in normalized.items() if before.get(k) != v}
+        persisted_changed = {k: v for k, v in normalized.items() if before.get(k) != v}
+        # 幂等写入：即使文件里已经是目标值也照写（原子替换、保留注释），
+        # 这样「文件已落盘但上次 apply 失败」的请求可以原样重试。
         self._config.set_many(normalized)
+
+        if apply:
+            # apply=True 时对**请求里的**运行时可调项做「运行态对齐」，
+            # 而不是只看文件差异。否则文件里已经是新值、运行态还是旧值时，
+            # 重试会返回 200 + applied=[] 的假成功（issue #9，不可自愈的死状态）。
+            restart_needed = sorted(set(normalized) & config_service.RESTART_KEYS)
+        else:
+            restart_needed = sorted(
+                set(persisted_changed) & config_service.RESTART_KEYS
+            )
 
         result: dict[str, object] = {
             "persisted": sorted(normalized),
-            "changed": sorted(changed),
+            "changed": sorted(persisted_changed),
             "applied": [],
-            "requires_restart": [],
+            "requires_restart": restart_needed,
             "operation_id": None,
         }
-        if not changed:
-            self._status.invalidate(static=True)
-            return result
-
-        restart_needed = sorted(set(changed) & config_service.RESTART_KEYS)
-        result["requires_restart"] = restart_needed
 
         if apply:
             # 复用各自的校验/生效路径，避免在这里手拼控制台命令
             applied: list[str] = []
-            if "motd" in changed:
-                self.set_motd(changed["motd"])
-                applied.append("motd")
-            if "password" in changed:
-                # 空字符串 = 清空（面板的「留空即移除」），走单独的路径，
-                # 因为 set_password() 会拒绝空值（那条校验是给 legacy 接口用的语义）。
-                if changed["password"]:
-                    self.set_password(changed["password"])
-                else:
-                    self.clear_password()
-                applied.append("password")
-            if "maxplayers" in changed:
-                self.set_max_players(int(changed["maxplayers"]))
-                applied.append("maxplayers")
+            try:
+                if "motd" in normalized:
+                    self.set_motd(normalized["motd"])
+                    applied.append("motd")
+                if "password" in normalized:
+                    # 空字符串 = 清空（面板的「留空即移除」），走单独的路径，
+                    # 因为 set_password() 会拒绝空值（那条校验是给 legacy 接口用的语义）。
+                    if normalized["password"]:
+                        self.set_password(normalized["password"])
+                    else:
+                        self.clear_password()
+                    applied.append("password")
+                if "maxplayers" in normalized:
+                    self.set_max_players(int(normalized["maxplayers"]))
+                    applied.append("maxplayers")
+            except AppError as exc:
+                # 写了文件但没生效时，明确告诉调用方哪部分已落盘、哪部分还没生效，
+                # 而不是只回一个 503 让它猜（issue #9 的建议）。
+                details = dict(exc.details or {})
+                details.update(
+                    {
+                        "persisted": sorted(normalized),
+                        "applied": list(applied),
+                        "pending": sorted(
+                            (set(normalized) & config_service.RUNTIME_KEYS) - set(applied)
+                        ),
+                    }
+                )
+                exc.details = details
+                raise
             result["applied"] = applied
             self._status.invalidate(static=True)
 

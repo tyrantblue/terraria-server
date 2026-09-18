@@ -170,7 +170,12 @@ class WorldService:
 
         destination = self.worlds_dir / safe_name
         if destination.exists():
-            raise Conflict(f"world already exists: {safe_name}")
+            # details.file 是面板拼「A world file named "x" already exists」用的
+            # 结构化字段（issue #16.1），不再只能从 message 里抠名字。
+            raise Conflict(
+                f"world already exists: {safe_name}",
+                details={"file": safe_name},
+            )
 
         # 临时名必须唯一：两个人同时上传同名世界时，共用一个 .part 会让两边
         # 交错写同一个文件，先完成的 os.replace 之后另一个必然写坏/失败。
@@ -241,7 +246,7 @@ class WorldService:
         )
 
     def _activate_job(self, filename: str, progress) -> dict[str, object]:
-        progress(5, f"准备切换到 {filename}")
+        progress(5, f"准备切换到 {filename}", "activate.preparing", {"file": filename})
         # 1. 先保存当前世界（单向命令：save 会阻塞主循环数秒，不等回显）
         try:
             self._channel.send("save")
@@ -254,18 +259,18 @@ class WorldService:
         # 2. 修改 serverconfig.txt
         if not self._config.path.exists():
             raise UpstreamFailed("server config file not found")
-        progress(20, "写入 serverconfig.txt")
+        progress(20, "写入 serverconfig.txt", "activate.writing_config", {"file": filename})
         self._config.set("world", f"/worlds/{filename}")
 
         # 3. 退出 Terraria（单向；进程随后退出，哨兵永远不会回来）
-        progress(30, "关闭服务端")
+        progress(30, "关闭服务端", "activate.stopping_server")
         try:
             self._channel.send("exit")
         except Exception as exc:  # noqa: BLE001
             raise UpstreamFailed(f"failed to stop server: {exc}") from exc
 
         # 4. 等待服务端重新可用
-        self._wait_until_up(progress, base=40, span=50)
+        self._wait_until_up(progress, base=40, span=50, code="activate.waiting_listen")
         return {"world": filename}
 
     # -- 备份 ---------------------------------------------------------
@@ -385,7 +390,7 @@ class WorldService:
         active = self.active_world_file()
         is_active = target.name == active
 
-        progress(5, "保存当前世界")
+        progress(5, "保存当前世界", "restore.saving_world")
         try:
             self._channel.send("save")
         except Exception as exc:  # noqa: BLE001
@@ -397,25 +402,35 @@ class WorldService:
         safety.mkdir(parents=True, exist_ok=True)
         if target.exists():
             shutil.copy2(target, safety / target.name)
-        progress(15, f"安全副本已保存到 {safety.name}")
+        progress(
+            15,
+            f"安全副本已保存到 {safety.name}",
+            "restore.safety_copy",
+            {"name": safety.name},
+        )
 
         expected = _sha256(source)
 
         if is_active:
-            progress(25, "重启服务端（准备替换世界文件）")
+            progress(25, "重启服务端（准备替换世界文件）", "restore.restarting")
             self._channel.send("exit")
-            self._wait_until_up(progress, base=30, span=25)
+            self._wait_until_up(progress, base=30, span=25, code="restore.waiting_listen")
 
-            progress(60, "写入恢复后的世界文件")
+            progress(60, "写入恢复后的世界文件", "restore.writing_world", {"file": target.name})
             shutil.copy2(source, target)
             if _sha256(target) != expected:
                 raise UpstreamFailed("写入后的文件校验失败")
 
-            progress(70, "再次重启以加载恢复后的世界")
+            progress(70, "再次重启以加载恢复后的世界", "restore.restarting_again")
             self._channel.send("exit-nosave")
-            self._wait_until_up(progress, base=75, span=20)
+            self._wait_until_up(progress, base=75, span=20, code="restore.waiting_listen")
         else:
-            progress(60, "写入世界文件（该世界当前未激活，无需重启）")
+            progress(
+                60,
+                "写入世界文件（该世界当前未激活，无需重启）",
+                "restore.writing_world",
+                {"file": target.name},
+            )
             shutil.copy2(source, target)
             if _sha256(target) != expected:
                 raise UpstreamFailed("写入后的文件校验失败")
@@ -430,7 +445,15 @@ class WorldService:
             "safety_copy": str(safety),
         }
 
-    def _wait_until_up(self, progress, *, base: int, span: int, timeout: float = 45.0) -> None:
+    def _wait_until_up(
+        self,
+        progress,
+        *,
+        base: int,
+        span: int,
+        code: str = "waiting_listen",
+        timeout: float = 45.0,
+    ) -> None:
         deadline = time.monotonic() + timeout
         step = 0
         while time.monotonic() < deadline:
@@ -441,7 +464,7 @@ class WorldService:
             except Exception:  # noqa: BLE001 - 重启窗口内允许失败
                 pass
             step += 1
-            progress(min(base + span, base + step * 3), "等待服务端重新监听")
+            progress(min(base + span, base + step * 3), "等待服务端重新监听", code)
             time.sleep(1)
         raise UpstreamFailed(f"服务端在 {int(timeout)} 秒内没有恢复")
 
@@ -462,13 +485,18 @@ class WorldService:
         for index, source in enumerate(sources, start=1):
             shutil.copy2(source, target / source.name)
             copied.append(source.name)
-            progress(int(index / (len(sources) + 1) * 100), f"复制 {source.name}")
+            progress(
+                int(index / (len(sources) + 1) * 100),
+                f"复制 {source.name}",
+                "backup.copying",
+                {"file": source.name},
+            )
 
         if self._config.path.exists():
             shutil.copy2(self._config.path, target / self._config.path.name)
             copied.append(self._config.path.name)
 
-        progress(100, "备份完成")
+        progress(100, "备份完成", "backup.done", {"backup": stamp, "files": len(copied)})
         return {"backup": stamp, "files": copied}
 
 

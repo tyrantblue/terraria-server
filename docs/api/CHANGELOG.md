@@ -31,6 +31,96 @@
 
 ---
 
+## [2.1.0] — 2026-09-19
+
+**minor：全部是新增字段/能力，现有字段语义不变；外加若干错误码与错误信封的收敛。**
+对应仓库 issue #9–#18 的集中处理。
+
+### Added
+
+* **长任务的稳定文案与词汇表**（issue #18）：`GET /api/v1/operations/{id}` 新增
+  `message_code` / `message_params` / `kind_label`（`message` 原样保留）。
+  `message_code` 形如 `restart.stopping_server`，**终态也有**（`succeeded` / `failed`）。
+  `/api/meta` 新增 `operation_kinds: [{kind, label}]` 与
+  `exclusive_operation_kinds: [...]`，面板不必硬编码 kind → 文案映射。
+* **定时任务结果结构化**（issue #10 / #18）：`GET /api/v1/scheduler` 的
+  `jobs[].last_detail` 与 `history[].detail` 旁边新增 `last_code` / `code` 与
+  `last_params` / `params`；`POST /api/v1/scheduler/{name}/run` 对 `restart` 类任务
+  返回**顶层 `submitted: "<operation_id>"`**（不再只藏在 `detail` 字符串里）。
+* **`capabilities` 补全 + 引入版本**（issue #14）：新增 `guard.state`、
+  `scheduler.jobs`、`backups.list`、`notifications.status` 四项能力；
+  `/api/meta` 新增 `capability_since`（能力 → 引入版本）。能力**只增不减**，
+  新增能力属于 minor。
+* **`GET /api/v1/operations` 新增 `in_flight`**，并支持 `?state=running` 过滤（issue #15）。
+* **写操作限流**（issue #17.2）：`429 too_many_requests` 从此真正可达。
+  环境变量 `TERRARIA_RATE_LIMIT_ENABLED` / `TERRARIA_RATE_LIMIT_WRITE_PER_MINUTE` /
+  `TERRARIA_RATE_LIMIT_CONSOLE_PER_MINUTE` / `TERRARIA_RATE_LIMIT_RESTART_PER_MINUTE`，
+  响应带 `Retry-After` 与 `error.details.{bucket,limit,window_seconds,retry_after}`。
+* **可选写操作 token**（issue #17.1）：`TERRARIA_API_TOKEN` 非空时，写方法必须带
+  `Authorization: Bearer <token>` 或 `X-API-Token`，否则 **401** `unauthorized`。
+* **可配置 CORS 来源**（issue #17.1）：`TERRARIA_CORS_ORIGINS`（逗号分隔，默认 `*`），
+  并新增 `expose_headers: X-Client-Version`（issue #17.3）。
+* 新错误码：`operation_not_found`、`client_outdated`、`unauthorized`、
+  `too_many_requests`。
+
+### Changed
+
+* **`min_client_version` 从 `1.4.0` 提到 `1.4.1`，并且服务端开始真正强制它**
+  （issue #17.3）：带 `X-Client-Version` 且低于门槛时，除 `/api/meta` 与
+  `/api/health` 外一律 **426** `client_outdated`。不带头（脚本/curl）不拦。
+  选 `1.4.1` 的依据：它是采用 2.0 密码语义（「留空=不修改」）并给
+  `PUT /api/v1/config` 关掉自动重试的面板版本（见 issue #6 / #9）。
+* **`GET /api/v1/server` 的 `running` 反映真实探测结果**（issue #11）：
+  以能否从控制台读到回显为准，不再是硬编码的 `true`。控制台不可用且无缓存时
+  返回 **200**（`running: false`，读不到的字段为 `null`），不再是 500。
+* **`OperationRef.poll` 是按请求生成的真实 URL**（issue #16.2）：
+  `"poll": "/api/v1/operations/8f3c…"`，不再是未替换的模板字符串。
+* **`PUT /api/v1/config` 的 apply 语义**（issue #9）：`apply=true` 时无条件对齐请求里的
+  `runtime_keys`（与文件是否变化无关），所以「文件已写入、上次 apply 失败」的请求
+  可以原样重试；apply 失败时 `error.details` 给出 `{persisted, applied, pending}`。
+  `requires_restart` 的含义相应明确化（见 `v1.md` §5）。
+* **互斥集合收敛**（issue #12）：`world.restore` 加入 `EXCLUSIVE_KINDS`；
+  恢复进行中会拒绝 `world.backup`（409）。`config.apply` 从未被真正提交过，
+  已从集合与文档删除。
+* 中间件顺序调整，`CORSMiddleware` 现在包住所有早退响应（issue #13）：
+  上传预检的 413/507、限流的 429、鉴权的 401、版本门槛的 426 都带 CORS 头与
+  `X-Client-Version` 回显。
+
+### Fixed
+
+* **`operation` 不存在改用专用错误码**（issue #15）：404 且
+  `error.code = "operation_not_found"`、`error.details.operation_id`；路由不存在仍是
+  `not_found`。顺带修好「路由 404 不走统一信封」：`StarletteHTTPException` 现在也
+  被统一处理，不存在的路径会得到 `{detail, error:{code:"not_found"}}`。
+* **上传同名世界的 409 带 `error.details.file`**（issue #16.1）。
+* **pydantic 校验失败（422）走统一信封**（issue #16.3）：仍保留 `detail` 错误数组以
+  兼容旧客户端，新增 `error.code = "validation_failed"` 与 `error.details.errors`。
+* **守卫非法 IP 由 503 改为 400 `bad_request`**（issue #16.4），
+  `error.details.ip` 是原值；只有守卫确实不可用才是 503 `guard_unavailable`。
+  顺带把 IPv4 校验收紧到每段 `0..255`。
+* **`banlist.txt` 并发写不再丢行**（issue #17.4）：临时文件改为
+  `banlist.txt.<8 位 hex>.tmp`，并用 `banlist.txt.lock` 上的 flock 串行化 API 侧的
+  读-改-写。
+* 重启一个**已经退出**的服务端时给出可操作的错误（issue #11 附加项）：
+  提示用 `docker compose restart terraria` 拉起，而不是裸 ENXIO。
+
+### Docs
+
+* `v1.md`：新增 §0「认证、CORS 与限流」；补全 §1 能力表（名称 / 含义 / 引入版本 /
+  降级行为）、§2 `running` 与停服语义、§5 persisted/applied、§7 operations 保留策略与
+  结构化文案、§8 `submitted` 与 `code`、§9.1 守卫 400/503 的区分。
+* 明确写下语言契约：`message` / `error.message` / `detail`（字符串）是面向人的中文
+  回退文案，**不保证稳定、不要用于程序判断**；程序判断用 `code` / `state` / `error.code`。
+
+### Internal
+
+* 新增 `app/core/version.py`（语义化版本比较）与 `app/services/ratelimit.py`
+  （进程内滑动窗口限流）。
+* 测试 206 → **269**：issue #9–#18 各有对应回归文件
+  （`test_issue_9_config_apply.py` … `test_issue_18_message_codes.py`）。
+
+---
+
 ## [2.0.1] — 2026-09-19
 
 **patch：HTTP 契约没变**，只修两处实现缺陷，并补齐 2.0.0 遗漏的文档。
