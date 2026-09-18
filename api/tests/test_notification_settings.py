@@ -297,6 +297,17 @@ def test_test_endpoint_reports_missing_config(client) -> None:
 
 
 # ---------------------------------------------------------------- 事件过滤仍生效
+def _wait_for(predicate, timeout: float = 3.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def test_event_filter_applies_after_reconfig(rt, webhook) -> None:
     rt.notify_settings.save(
         rt.notifier.config,
@@ -305,10 +316,11 @@ def test_event_filter_applies_after_reconfig(rt, webhook) -> None:
     rt.notifier.configure(rt.notify_settings.load())
     rt.notifier.notify("player_join", "不该发")
     rt.notifier.notify("log_stalled", "应该发")
-    rt.notifier.test()  # 用同步发送把队列冲干净（test 不受白名单限制）
+
+    # `notify()` 是异步的（走后台队列）：等它真的投递出去再断言，别赌时序
+    assert _wait_for(lambda: any(item["event"] == "log_stalled" for item in _Webhook.received))
     events = [item["event"] for item in _Webhook.received]
-    assert "player_join" not in events
-    assert "log_stalled" in events
+    assert events == ["log_stalled"], events
 
 
 def test_notification_config_dataclass_is_frozen() -> None:
